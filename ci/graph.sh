@@ -41,4 +41,5 @@ python -m blastradius.cli verify --out artifacts/results.json
 # The API is checked last, against the graph the run just built: every route is
 # driven over real HTTP and the assertions are about content, so a page that
 # would render empty fails the build instead of surviving until a demo.
-python -m blastradius.cli serve --selfcheck --out artifacts/api.json
+python -m blastradius.cli serve --selfcheck --out artifacts/api.json \
+  --dump-dir artifacts/api-samples

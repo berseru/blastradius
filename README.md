@@ -203,12 +203,16 @@ sentinel `0` and read back as unknown (`queries.known_time`), never as 1970.
 
 Four lockfiles under `examples/`, resolved from the real npm registry:
 
-| service | resolved packages | what it demonstrates |
-|---|---|---|
-| `checkout-api` | 249 | an ordinary API a year behind on upgrades |
-| `admin-dashboard` | 488 | a large front-end tree, mostly dev dependencies |
-| `data-worker` | 47 | a small tree with critical database vulnerabilities |
-| `typosquat-incident` | 82 | five real malicious typosquats, none with a fix |
+| service | lockfile entries | distinct pins | what it demonstrates |
+|---|---|---|---|
+| `checkout-api` | 249 | 248 | an ordinary API a year behind on upgrades |
+| `admin-dashboard` | 488 | 484 | a large front-end tree, mostly dev dependencies |
+| `data-worker` | 47 | 47 | a small tree with critical database vulnerabilities |
+| `typosquat-incident` | 82 | 82 | five real malicious typosquats, none with a fix |
+
+The two columns differ because npm writes the same `name@version` at more than one
+path in `node_modules`, and a graph node is the version, not the path: 866
+lockfile entries become 861 `USES` edges.
 
 They pin deliberately outdated versions, because that is what real applications
 look like: the same 25 popular packages pinned to their newest release produce 10
@@ -233,7 +237,7 @@ four example services are measured against:
 | maintainer accounts | 1,036 |
 | advisories kept (of 226,817 scanned) | 130 |
 | `DEPENDS` / `USES` / `MAINTAINS` edges | 6,418 / 861 / 5,280 |
-| `AFFECTS` / `SIMILAR` edges | 180 / 7 |
+| `AFFECTS` / `SIMILAR` edges | 180 / 5 |
 
 Per service — pinned versions an advisory names, how many of those are malware,
 how many have no fixed version at all, and how many distinct dependency chains
@@ -259,8 +263,9 @@ worth pre-emptive attention: `es-errors@1.3.0` carries 71 paths in
 `checkout-api`, `inherits@2.0.4` 53 in `admin-dashboard` — small packages nobody
 chose, sitting under everything.
 
-Typosquat detection on the same run flagged the five real malicious names and
-nothing else in that service's tree, with the popularity gap it measured:
+Typosquat detection on the same run produced five `SIMILAR` edges over 2,278
+packages - the five real malicious names, and nothing else - with the popularity
+gap it measured:
 
 | suspect | weekly downloads | impersonates | weekly downloads | ratio |
 |---|---|---|---|---|
@@ -270,11 +275,23 @@ nothing else in that service's tree, with the popularity gap it measured:
 | `expess` | 138 | `express` | 127,296,948 | 1.1e-06 |
 | `fodash` | 5 | `lodash` | 167,905,798 | 3.0e-08 |
 
+Getting there took removing a false positive the detector used to produce. An
+earlier run reported `color -> colord` and `synckit -> asynckit`, because OSV
+names `color` and `synckit` in malicious-release advisories and "already known to
+be malware" used to waive the popularity check. Both are among the most installed
+packages on npm; being compromised is not impersonating, and the compromise is
+already reported through the advisory edge. The waiver now covers only missing
+download data, and both pairs are pinned as a regression test. This is also why
+every run lists its pairs with both download counts in `artifacts/ingest.json`
+rather than only counting them - a detection nobody can check is a detection
+nobody should trust.
+
 Query latency on that graph, per service, worst case across the four: depth
 profile 1,465 ms, choke points 536 ms, lookalikes 208 ms, blast-radius paths
 46 ms, direct hits 90 ms, exposure windows 50 ms. Ingest wrote 22,174 rows in
 1.94 s; the 226,817-advisory dump was parsed in 10.4 s; `selftest` put all
-23 checks against a live node in 0.1 s.
+24 checks against a live node in 0.15 s, and `serve --selfcheck` drove all 14 API
+checks over HTTP against the same graph.
 
 ## Reproducing the numbers
 

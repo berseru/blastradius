@@ -240,7 +240,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            report = api_selfcheck(f"http://{host}:{port}")
+            report = api_selfcheck(
+                f"http://{host}:{port}",
+                dump_dir=Path(args.dump_dir) if args.dump_dir else None,
+            )
         finally:
             server.shutdown()
             server.server_close()
@@ -257,12 +260,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def api_selfcheck(base: str) -> dict:
+def api_selfcheck(base: str, dump_dir: Path | None = None) -> dict:
     """Drive every route over HTTP and check the answers are answers.
 
     The assertions are deliberately about content, not status codes: a route
     returning ``200 {}`` is the failure mode worth catching, and "the UI showed
     nothing" is exactly what a green build must not hide.
+
+    With ``dump_dir`` every response is also written out. CI is the only place a
+    populated graph exists, so those files are the only way the UI can be shown -
+    in a README, in a demo - with the real corpus behind it rather than a fixture.
     """
     import urllib.error
 
@@ -286,6 +293,12 @@ def api_selfcheck(base: str) -> dict:
             ok, detail = False, f"{type(error).__name__}: {error}"
         checks.append({"route": route, "ok": ok, "status": status, "ms": round(elapsed, 1),
                        "detail": detail or json.dumps(payload)[:160]})
+        if dump_dir is not None and status == 200:
+            name = route.lstrip("/").replace("/", "_").replace("?", "_").replace("=", "-")
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            (dump_dir / f"{name}.json").write_text(
+                json.dumps(payload, indent=2, default=str), encoding="utf-8"
+            )
         return payload
 
     health = check("/api/health", lambda status, body: status == 200 and body["ok"])
@@ -435,6 +448,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--selfcheck", action="store_true", help="drive every route once and exit"
     )
     serve_cmd.add_argument("--out", default="artifacts/api.json")
+    serve_cmd.add_argument(
+        "--dump-dir",
+        default="artifacts/api-samples",
+        help="write every response body here, so the UI can be shown with real data",
+    )
     serve_cmd.set_defaults(func=cmd_serve)
 
     ask = sub.add_parser("ask", help="show the hits for one service")
