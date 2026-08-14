@@ -117,8 +117,16 @@ def find_typosquats(
     """Keep only the pairs where one side is popular and the other is not.
 
     ``always_suspect`` names (for example packages an advisory already calls
-    malware) are kept even when the download endpoint has no data for them,
-    which is the normal case after npm removes a malicious release.
+    malware) are kept when the download endpoint has no data for them, which is
+    the normal case after npm removes a malicious release. It does **not** waive
+    the popularity gap, and an earlier version of this function that did was
+    wrong in a way worth recording: it emitted ``color -> colord`` and
+    ``synckit -> asynckit``, because OSV names ``color`` and ``synckit`` in
+    malicious-release advisories and both are far *more* installed than the
+    package they were paired with. Being compromised is not the same as
+    impersonating: a compromised popular package is already reported through its
+    advisory, and calling it a typosquat of a smaller neighbour is a false
+    accusation. Impersonation requires the suspect to be the obscure side.
     """
     forced = set(always_suspect)
     found: list[SimilarPair] = []
@@ -137,7 +145,7 @@ def find_typosquats(
                 ratio = 0.0
             else:
                 ratio = suspect_downloads / target_downloads
-                if ratio > max_ratio and suspect not in forced:
+                if ratio > max_ratio:
                     continue
             found.append(
                 SimilarPair(

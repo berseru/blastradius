@@ -98,3 +98,27 @@ class TestFindTyposquats:
     def test_direction_follows_popularity(self):
         found = find_typosquats(self.NAMES, self.DOWNLOADS)
         assert found[0].suspect == "axioss" and found[0].target == "axios"
+
+    def test_a_compromised_popular_package_is_not_called_a_typosquat(self):
+        """Regression, with the numbers that produced it.
+
+        A CI run emitted `color -> colord` and `synckit -> asynckit`: OSV names
+        both `color` and `synckit` in malicious-release advisories, and the
+        `always_suspect` waiver used to skip the popularity check entirely - so
+        two of the most installed packages on npm were reported as impersonating
+        smaller neighbours. Being compromised is not impersonating.
+        """
+        downloads = {
+            "color": 49_623_174,
+            "colord": 18_867_184,
+            "synckit": 54_547_152,
+            "asynckit": 115_641_564,
+        }
+        found = find_typosquats(
+            list(downloads), downloads, always_suspect={"color", "synckit"}
+        )
+        assert found == [], f"a popular package was accused of typosquatting: {found}"
+
+    def test_known_malware_still_needs_the_popularity_gap(self):
+        downloads = {"axios": 119_805_667, "axioss": 119_000_000}
+        assert find_typosquats(self.NAMES, downloads, always_suspect={"axioss"}) == []
