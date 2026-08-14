@@ -105,11 +105,18 @@ export HYDRA_TOKEN=dev-token
 **3. Ingest and ask:**
 
 ```bash
-blastradius wait                      # block until /readyz is green
+blastradius wait                      # block until a query round-trips
+blastradius selftest                  # every statement, on 11 synthetic vertices
 blastradius ingest --seeds 40         # registry + OSV -> graph
 blastradius verify --out artifacts/results.json
 blastradius ask typosquat-incident
 ```
+
+`selftest` takes a couple of seconds and is worth running first: it writes a
+miniature graph with the production statements, runs every production query
+against it, checks the answers and deletes it again, reporting each statement the
+server refuses with the server's own message. It is how an unsupported query gets
+found before a 219 MB download rather than after it.
 
 `ingest` downloads the OSV npm archive once (~219 MB) into `data/` and caches
 every registry response under `data/cache/`, so re-runs are cheap and offline.
@@ -127,8 +134,11 @@ they are pushed into the database rather than pulled into Python.
 - **Cypher for the rest.** Direct hits, depth profile, choke points, maintainer
   footprint and exposure windows are aggregations over the same graph.
 - **Bulk writes via `UNWIND $rows`.** Ingest sends nested-JSON parameter batches
-  over the HTTP query endpoint, upserting with `MERGE` by id then `SET`, 500 rows
-  per statement, vertices before edges.
+  over the HTTP query endpoint, upserting with `MERGE` by id then `SET`, vertices
+  before edges. Batches are the only multi-row write there is: outside an
+  `UNWIND`, a `MERGE` cannot be followed by any clause at all, so every statement
+  in `model.py` is a batch. Chunks are bounded by row count *and* by serialised
+  size, because the server caps a request body at 1 MiB.
 - **Stable 62-bit ids** (blake2b, 4-bit kind tag per label) so an ingest is
   idempotent and re-runnable without duplicating nodes.
 - **Cursor-aware reads.** The client follows `next_cursor` so result sets larger
@@ -138,6 +148,13 @@ Written against the server's own source, not against assumptions: variable-lengt
 hop bounds are formatted as range-checked integer literals because the parser
 resolves them against an empty parameter map, and the traversal ceiling matches
 the server default of 16 hops.
+
+Two other rules shaped the schema, both enforced by the server rather than by
+convention. A vertex upsert has to `MERGE` on `id` alone — folding properties
+into the pattern is rejected, since the pattern is the identity being matched.
+And there is no null property value: a `None` anywhere in a parameter fails the
+whole request, so "we do not know when this was published" is written as the
+sentinel `0` and read back as unknown (`queries.known_time`), never as 1970.
 
 ## Example services
 
@@ -179,8 +196,14 @@ pytest tests/unit -q
 The unit suite covers the parts where being quietly wrong would be invisible:
 semver range matching (including prerelease rules), OSV timestamp parsing,
 lockfile v1/v2/v3 shapes, id collision safety, advisory de-duplication and row
-building. CI runs the suite, then starts a real HydraDB node and runs the
-traversals against it.
+building. `tests/unit/test_statements.py` additionally holds every statement to
+the rules the database enforces — batch form, `MERGE` on `id` alone, no nulls,
+every field present in every row, body-size-bounded chunks — so a violation fails
+in 0.2s locally instead of minutes into a CI run.
+
+CI runs the suite, then starts a real HydraDB node and runs `selftest`, the
+ingest and the traversals against it, publishing `artifacts/selftest.json`,
+`artifacts/ingest.json`, `artifacts/results.json` and the node's own logs.
 
 ## Data sources and attribution
 

@@ -32,5 +32,9 @@ docker run -d --name "$HYDRA_CONTAINER" \
   "$HYDRA_IMAGE"
 
 python -m blastradius.cli wait
+# The self test is first on purpose: it proves every statement on 11 synthetic
+# vertices in seconds, so an unsupported query is reported before the ingest
+# spends minutes downloading the advisory corpus.
+python -m blastradius.cli selftest --out artifacts/selftest.json
 python -m blastradius.cli ingest --seeds "$SEED_PACKAGES"
 python -m blastradius.cli verify --out artifacts/results.json

@@ -131,6 +131,15 @@ COUNT_BY_EDGE = "MATCH ()-[r:%s]->() RETURN count(r) AS total"
 # --------------------------------------------------------------------------
 
 
+def known_time(value: object) -> int | None:
+    """0 is the ingest's "unknown timestamp" sentinel, since properties cannot be
+    null. Turning it back into ``None`` here keeps every date calculation honest
+    instead of quietly reporting exposure since 1970."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value or None
+
+
 @dataclass
 class Hit:
     """One advisory landing on one pinned version."""
@@ -199,8 +208,8 @@ def direct_hits(client: HydraClient, service_id: int) -> list[Hit]:
             severity=row.get("severity") or "UNKNOWN",
             direct=bool(row.get("direct")),
             dev=bool(row.get("dev")),
-            disclosed_at=row.get("advisory_published"),
-            version_published=row.get("version_published"),
+            disclosed_at=known_time(row.get("advisory_published")),
+            version_published=known_time(row.get("version_published")),
             has_fix=bool(row.get("has_fix")),
         )
         for row in result.dicts()
@@ -249,7 +258,9 @@ def exposure_windows(client: HydraClient, service_id: int) -> list[dict[str, Any
     """Days between disclosure and the snapshot, per hit."""
     rows = client.run(EXPOSURE_WINDOW, {"service_id": service_id}).dicts()
     for row in rows:
-        disclosed, captured = row.get("disclosed_at"), row.get("captured_at")
+        disclosed = known_time(row.get("disclosed_at"))
+        captured = known_time(row.get("captured_at"))
+        row["disclosed_at"] = disclosed
         row["exposed_days"] = (
             round((captured - disclosed) / 86400, 1)
             if isinstance(disclosed, int) and isinstance(captured, int) and captured > disclosed

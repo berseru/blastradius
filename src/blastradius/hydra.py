@@ -13,6 +13,7 @@ again anywhere else in the codebase.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator, Sequence
@@ -23,6 +24,17 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8443"
 DEFAULT_GRAPH = "default"
 DEFAULT_NAMESPACE = "default"
 DEFAULT_CELL = "cell-0"
+
+# The server rejects a request body over 1 MiB (``DEFAULT_HTTP_MAX_BODY_BYTES``
+# in ``client/http.rs``), so batches are split on serialised size as well as on
+# row count. 768 KiB leaves room for the query text and the JSON envelope.
+MAX_BODY_BYTES = 768 * 1024
+
+HEALTHCHECK_WRITE = (
+    "UNWIND $rows AS row MERGE (n {id: row.vertex}) SET n:Healthcheck, n.at = row.at"
+)
+HEALTHCHECK_READ = "MATCH (n:Healthcheck {id: $id}) RETURN n.id AS id"
+HEALTHCHECK_DELETE = "MATCH (n:Healthcheck {id: $id}) DETACH DELETE n"
 
 
 class HydraError(RuntimeError):
@@ -191,9 +203,13 @@ class HydraClient:
 
         while time.monotonic() < deadline:
             try:
-                self.run("MERGE (n {id: $id}) SET n:Healthcheck", {"id": 0})
-                if self.run("MATCH (n:Healthcheck {id: $id}) RETURN n.id AS id", {"id": 0}).scalar() == 0:
-                    self.run("MATCH (n:Healthcheck {id: $id}) DETACH DELETE n", {"id": 0})
+                # The write has to be the batch form. A bare
+                # ``MERGE (n {id: $id}) SET ...`` is rejected outright -
+                # "MERGE with following clauses is not executable" - because
+                # only ``UNWIND``-driven batches may follow a MERGE with SET.
+                self.run(HEALTHCHECK_WRITE, {"rows": [{"vertex": 0, "at": int(time.time())}]})
+                if self.run(HEALTHCHECK_READ, {"id": 0}).scalar() == 0:
+                    self.run(HEALTHCHECK_DELETE, {"id": 0})
                     return time.monotonic() - started
             except Exception as exc:  # noqa: BLE001 - the engine may still be opening storage
                 last = exc
@@ -267,9 +283,10 @@ class HydraClient:
     ) -> int:
         """Send ``UNWIND $rows`` batches, returning the number of rows written.
 
-        ``chunk_size`` is the single most important ingest knob: too small and
-        the round trips dominate, too large and the request exceeds the
-        server's body limit.
+        A batch is the only way to write more than one thing per round trip:
+        outside ``UNWIND``, a MERGE cannot be followed by SET at all. Chunks are
+        bounded twice, by row count and by serialised size, because the server
+        caps a request body at 1 MiB.
         """
         written = 0
         started = time.perf_counter()
@@ -282,13 +299,37 @@ class HydraClient:
         return written
 
 
+def check_row(row: dict[str, Any], *, where: str = "row") -> dict[str, Any]:
+    """Reject a row the server would reject, with a message that names the field.
+
+    HydraDB properties are scalars only - there is no null property value, and a
+    ``None`` anywhere in a parameter is answered with a flat
+    ``invalid_parameter`` for the whole request
+    (``http_parameter_to_property`` in ``client/http.rs``). Catching it here
+    turns one opaque 400 into the field that caused it.
+    """
+    for key, value in row.items():
+        if value is None:
+            raise ValueError(f"{where}: field {key!r} is None; HydraDB has no null property")
+        if not isinstance(value, (str, int, float, bool)):
+            raise ValueError(
+                f"{where}: field {key!r} is {type(value).__name__}; only scalars are storable"
+            )
+    return row
+
+
 def _chunks(rows: Iterable[dict[str, Any]], size: int) -> Iterator[list[dict[str, Any]]]:
+    """Split rows into chunks of at most ``size`` rows and ``MAX_BODY_BYTES``."""
     batch: list[dict[str, Any]] = []
-    for row in rows:
-        batch.append(row)
-        if len(batch) >= size:
+    batch_bytes = 0
+    for index, row in enumerate(rows):
+        check_row(row, where=f"row {index}")
+        row_bytes = len(json.dumps(row, ensure_ascii=False, default=str).encode("utf-8")) + 1
+        if batch and (len(batch) >= size or batch_bytes + row_bytes > MAX_BODY_BYTES):
             yield batch
-            batch = []
+            batch, batch_bytes = [], 0
+        batch.append(row)
+        batch_bytes += row_bytes
     if batch:
         yield batch
 

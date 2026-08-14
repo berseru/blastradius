@@ -21,6 +21,11 @@ from .npmdata import Fetcher, PackageMeta, ResolvedGraph
 from .osv import Advisory, iter_advisories
 from .versions import is_affected
 
+# HydraDB has no null property value, so "we do not know when this was
+# published" is written as 0 rather than omitted. Every consumer of a timestamp
+# treats 0 as unknown; nothing in this corpus is genuinely dated 1970-01-01.
+UNKNOWN_TIME = 0
+
 
 @dataclass
 class Rows:
@@ -151,7 +156,7 @@ def build_rows(
                 "id": package_id,
                 "name": name,
                 "version_count": len(meta.versions) if meta else len(versions),
-                "first_published": meta.first_published if meta else None,
+                "first_published": (meta.first_published if meta else 0) or UNKNOWN_TIME,
             },
         )
         for version in sorted(versions):
@@ -163,7 +168,8 @@ def build_rows(
                     "key": f"{name}@{version}",
                     "name": name,
                     "version": version,
-                    "published_at": meta.versions.get(version) if meta else None,
+                    "published_at": (meta.versions.get(version, 0) if meta else 0)
+                    or UNKNOWN_TIME,
                     "deprecated": bool(meta and version in meta.deprecated),
                 },
             )
@@ -257,7 +263,7 @@ def build_rows(
                     "osv": advisory.id,
                     "kind": advisory.kind,
                     "severity": advisory.severity,
-                    "published_at": advisory.published,
+                    "published_at": advisory.published or UNKNOWN_TIME,
                     "has_fix": advisory.has_fix,
                     "summary": (advisory.summary or "")[:300],
                 },

@@ -1,9 +1,10 @@
-"""Command line entry point: ``wait``, ``ingest``, ``verify``, ``ask``.
+"""Command line entry point: ``wait``, ``selftest``, ``ingest``, ``verify``, ``ask``.
 
-CI runs the first three in order. ``verify`` is the important one - it runs
-every query in :mod:`blastradius.queries` against a real node and writes a JSON
-receipt, so a green run means the queries executed, not merely that the code
-imported.
+CI runs the first four in order. ``selftest`` proves every statement against a
+real node on an 11-vertex fixture in seconds, so an unsupported query is caught
+before the 220 MB ingest rather than after it. ``verify`` then runs every query
+against the real graph and writes a JSON receipt, so a green run means the
+queries executed, not merely that the code imported.
 """
 
 from __future__ import annotations
@@ -69,6 +70,23 @@ def cmd_wait(args: argparse.Namespace) -> int:
             timeout_s=args.timeout,
         )
     print(f"hydradb ready and round-tripping after {elapsed:.1f}s")
+    return 0
+
+
+def cmd_selftest(args: argparse.Namespace) -> int:
+    """Prove every statement against a real node before trusting a full run."""
+    from .selftest import run_selftest, write_report
+
+    with client_from_env() as client:
+        report = run_selftest(client)
+    print(report.render())
+    write_report(report, args.out)
+    if report.failures:
+        print(
+            f"{len(report.failures)} of {len(report.checks)} checks failed",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -246,6 +264,12 @@ def build_parser() -> argparse.ArgumentParser:
     wait = sub.add_parser("wait", help="block until HydraDB round-trips a query")
     wait.add_argument("--timeout", type=float, default=240.0)
     wait.set_defaults(func=cmd_wait)
+
+    selftest = sub.add_parser(
+        "selftest", help="run every statement against a real node on a tiny fixture"
+    )
+    selftest.add_argument("--out", default="artifacts/selftest.json")
+    selftest.set_defaults(func=cmd_selftest)
 
     ingest = sub.add_parser("ingest", help="build the graph from public data")
     ingest.add_argument("--seeds", type=int, default=None, help="how many seed packages")
