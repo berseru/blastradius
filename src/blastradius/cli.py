@@ -189,6 +189,56 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Re-derive the ecosystem counts quoted in the README. Needs no database."""
+    from .osv import iter_advisories, summarise
+
+    archive = ensure_archive(Path(args.archive))
+    started = time.perf_counter()
+    stats = summarise(iter_advisories(archive))
+    elapsed = time.perf_counter() - started
+
+    def day(value: int | None) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime(value)) if value else "-"
+
+    print(f"advisories                    {stats.advisories:>9,}")
+    print(f"  malicious packages (MAL)    {stats.malicious:>9,}  "
+          f"({stats.malicious_share:.1%})")
+    print(f"    ...offering a fix         {stats.malicious_with_fix:>9,}")
+    print(f"  vulnerabilities (GHSA)      {stats.vulnerabilities:>9,}")
+    print(f"    ...with no fix available  {stats.vulnerabilities_without_fix:>9,}")
+    print(f"  withdrawn                   {stats.withdrawn:>9,}")
+    print(f"distinct packages named       {stats.packages:>9,}")
+    print(f"published between             {day(stats.first_published)} and "
+          f"{day(stats.last_published)}")
+    print(f"parsed in                     {elapsed:>9.1f}s")
+
+    if args.out:
+        payload = {
+            "archive": str(archive),
+            "archive_bytes": archive.stat().st_size,
+            "parse_seconds": round(elapsed, 2),
+            "first_published": day(stats.first_published),
+            "last_published": day(stats.last_published),
+            **{
+                key: getattr(stats, key)
+                for key in (
+                    "advisories",
+                    "malicious",
+                    "malicious_with_fix",
+                    "vulnerabilities",
+                    "vulnerabilities_without_fix",
+                    "withdrawn",
+                    "packages",
+                )
+            },
+        }
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"wrote {args.out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blastradius", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -209,6 +259,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify_cmd = sub.add_parser("verify", help="run every query and write a receipt")
     verify_cmd.add_argument("--out", default="artifacts/results.json")
     verify_cmd.set_defaults(func=cmd_verify)
+
+    stats = sub.add_parser("stats", help="ecosystem counts from the OSV dump, no database needed")
+    stats.add_argument("--archive", default=str(DEFAULT_ARCHIVE))
+    stats.add_argument("--out", default="artifacts/corpus.json")
+    stats.set_defaults(func=cmd_stats)
 
     ask = sub.add_parser("ask", help="show the hits for one service")
     ask.add_argument("service")

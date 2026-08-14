@@ -113,3 +113,68 @@ def test_non_semver_ranges_are_ignored_but_versions_kept():
 def test_affected_entry_without_a_package_name_is_dropped():
     advisory = parse_advisory({"id": "X", "affected": [{"ranges": []}]})
     assert advisory.affected == []
+
+
+class TestSummarise:
+    """The corpus counts quoted in the README come from here."""
+
+    def _advisory(self, osv_id, ranges=(), versions=(), withdrawn=None, published=1_700_000_000,
+                  package="pkg"):
+        from blastradius.osv import Advisory, Affected
+
+        return Advisory(
+            id=osv_id,
+            kind="malicious" if osv_id.startswith("MAL") else "vulnerability",
+            published=published,
+            modified=published,
+            withdrawn=withdrawn,
+            summary="",
+            aliases=[],
+            severity="",
+            cvss_vector="",
+            affected=[Affected(package=package, ranges=list(ranges), versions=list(versions))],
+        )
+
+    def test_counts_split_by_record_type(self):
+        from blastradius.osv import AffectedRange, summarise
+
+        stats = summarise([
+            self._advisory("MAL-1", ranges=[AffectedRange(introduced="0")]),
+            self._advisory("MAL-2", ranges=[AffectedRange(introduced="0", fixed="2.0.0")]),
+            self._advisory("GHSA-1", ranges=[AffectedRange(introduced="0", fixed="1.2.3")]),
+            self._advisory("GHSA-2", ranges=[AffectedRange(introduced="0")]),
+        ])
+        assert stats.advisories == 4
+        assert stats.malicious == 2
+        assert stats.malicious_with_fix == 1
+        assert stats.vulnerabilities == 2
+        assert stats.vulnerabilities_without_fix == 1
+        assert stats.malicious_share == 0.5
+
+    def test_packages_are_counted_once_across_advisories(self):
+        from blastradius.osv import summarise
+
+        stats = summarise([
+            self._advisory("MAL-1", package="expess"),
+            self._advisory("MAL-2", package="expess"),
+            self._advisory("GHSA-1", package="express"),
+        ])
+        assert stats.packages == 2
+
+    def test_publication_range_and_withdrawals(self):
+        from blastradius.osv import summarise
+
+        stats = summarise([
+            self._advisory("GHSA-1", published=1_500_000_000),
+            self._advisory("GHSA-2", published=1_700_000_000, withdrawn=1_700_000_100),
+        ])
+        assert stats.first_published == 1_500_000_000
+        assert stats.last_published == 1_700_000_000
+        assert stats.withdrawn == 1
+
+    def test_empty_corpus_does_not_divide_by_zero(self):
+        from blastradius.osv import summarise
+
+        stats = summarise([])
+        assert stats.advisories == 0
+        assert stats.malicious_share == 0.0

@@ -21,7 +21,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 OSV_NPM_URL = "https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip"
 
@@ -158,6 +158,65 @@ def parse_advisory(document: dict) -> Advisory:
         severity=str(database_specific.get("severity") or "UNKNOWN").upper(),
         cvss_vector=_cvss_vector(document.get("severity", [])),
         affected=affected,
+    )
+
+
+@dataclass(frozen=True)
+class CorpusStats:
+    """The ecosystem counts quoted in the README, derived not hand-counted."""
+
+    advisories: int = 0
+    malicious: int = 0
+    malicious_with_fix: int = 0
+    vulnerabilities: int = 0
+    vulnerabilities_without_fix: int = 0
+    withdrawn: int = 0
+    packages: int = 0
+    first_published: int | None = None
+    last_published: int | None = None
+
+    @property
+    def malicious_share(self) -> float:
+        return self.malicious / self.advisories if self.advisories else 0.0
+
+
+def summarise(advisories: Iterable[Advisory]) -> CorpusStats:
+    """Fold a stream of advisories into the corpus counts.
+
+    Streaming, because the npm dump does not fit comfortably in memory as parsed
+    objects and the whole point is that these numbers stay reproducible.
+    """
+    counts = dict(
+        advisories=0,
+        malicious=0,
+        malicious_with_fix=0,
+        vulnerabilities=0,
+        vulnerabilities_without_fix=0,
+        withdrawn=0,
+    )
+    packages: set[str] = set()
+    first: int | None = None
+    last: int | None = None
+
+    for advisory in advisories:
+        counts["advisories"] += 1
+        if advisory.withdrawn is not None:
+            counts["withdrawn"] += 1
+        if advisory.is_malicious:
+            counts["malicious"] += 1
+            if advisory.has_fix:
+                counts["malicious_with_fix"] += 1
+        else:
+            counts["vulnerabilities"] += 1
+            if not advisory.has_fix:
+                counts["vulnerabilities_without_fix"] += 1
+        packages.update(advisory.packages)
+        if advisory.published is not None:
+            first = advisory.published if first is None else min(first, advisory.published)
+            last = advisory.published if last is None else max(last, advisory.published)
+
+    return CorpusStats(
+        packages=len(packages), first_published=first, last_published=last, **counts
     )
 
 
