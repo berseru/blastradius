@@ -2,9 +2,10 @@
 
 import pytest
 
-from blastradius.lockfile import Lockfile, Pin
+from blastradius.lockfile import Edge, Lockfile, Pin
 from blastradius.npmdata import PackageMeta, ResolvedGraph
 from blastradius.osv import Advisory, Affected, AffectedRange
+from blastradius.typosquat import UNKNOWN_DOWNLOADS
 from blastradius.pipeline import Rows, build_rows, match_versions, read_seeds
 
 
@@ -127,6 +128,7 @@ class TestBuildRows:
                 service="checkout-api",
                 lockfile_version=3,
                 pins=[Pin("express", "4.18.2", direct=True), Pin("accepts", "1.3.8")],
+                edges=[Edge("express@4.18.2", "accepts@1.3.8", "~1.3.8")],
             )
         ]
         advisories = {
@@ -174,3 +176,51 @@ class TestBuildRows:
     def test_service_snapshot_time_reaches_the_row(self):
         rows, _stats, _book = build_rows(*self._inputs(), captured_at=1_700_000_500)
         assert rows.buckets["services"][0]["captured_at"] == 1_700_000_500
+
+    def test_lockfile_edges_are_marked_direct_at_the_pinned_version(self):
+        """The whole point of the fix: a pin must have an outgoing edge."""
+        rows, _stats, book = build_rows(*self._inputs())
+        depends = {
+            (row["from_id"], row["to_id"]): row for row in rows.buckets["depends"]
+        }
+        key = (book.version("express", "4.18.2"), book.version("accepts", "1.3.8"))
+        assert depends[key]["direct"] is True
+        assert depends[key]["requirement"] == "~1.3.8"
+
+    def test_a_registry_edge_for_a_version_nobody_ships_does_not_replace_it(self):
+        """Lockfile edges win: they are queued first, so the `direct` flag stays."""
+        seeds, metas, resolved, advisories, lockfiles = self._inputs()
+        resolved[0].edges = [(0, 1, "^1.0.0")]
+        rows, _stats, _book = build_rows(seeds, metas, resolved, advisories, lockfiles)
+        assert len(rows.buckets["depends"]) == 1
+        assert rows.buckets["depends"][0]["direct"] is True
+
+    def test_download_counts_reach_the_package_rows(self):
+        seeds, metas, resolved, advisories, lockfiles = self._inputs()
+        rows, _stats, _book = build_rows(
+            seeds, metas, resolved, advisories, lockfiles,
+            downloads={"express": 127_296_948},
+        )
+        counts = {row["name"]: row["downloads"] for row in rows.buckets["packages"]}
+        assert counts["express"] == 127_296_948
+        assert counts["accepts"] == UNKNOWN_DOWNLOADS
+
+    def test_typosquat_edge_is_built_for_a_malicious_lookalike(self):
+        seeds, metas, resolved, advisories, lockfiles = self._inputs()
+        metas["expess"] = PackageMeta(
+            name="expess", versions={"4.18.2": 1_600_000_000}, maintainers=[]
+        )
+        lockfiles[0].pins.append(Pin("expess", "4.18.2", direct=True))
+        advisories["expess"] = [
+            advisory("MAL-2025-1", "malicious", "expess", ranges=[AffectedRange(introduced="0")])
+        ]
+        rows, stats, book = build_rows(
+            seeds, metas, resolved, advisories, lockfiles,
+            downloads={"express": 127_296_948, "expess": 138},
+        )
+        assert stats.similar_edges == 1
+        edge = rows.buckets["similar"][0]
+        assert edge["from_id"] == book.package("expess")
+        assert edge["to_id"] == book.package("express")
+        assert edge["distance"] == 1
+        assert 0 < edge["downloads_ratio"] < 0.0001

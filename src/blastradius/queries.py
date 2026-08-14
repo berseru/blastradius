@@ -136,6 +136,15 @@ RETURN other.name AS candidate, r.distance AS distance,
        r.downloads_ratio AS downloads_ratio
 """
 
+# 7. Lookalikes a service actually ships. The SIMILAR edge alone is a corpus
+#    fact; joined through USES it becomes "you installed the wrong one".
+SERVICE_LOOKALIKES = """
+MATCH (s:Svc {id: $service_id})-[:USES]->(v:Ver)-[:OF]->(p:Pkg)-[r:SIMILAR]->(target:Pkg)
+RETURN v.key AS version, p.name AS suspect, target.name AS looks_like,
+       r.distance AS distance, r.downloads_ratio AS downloads_ratio,
+       p.downloads AS suspect_downloads, target.downloads AS target_downloads
+"""
+
 MAX_TRAVERSAL_HOPS = 16  # server default for max_traversal_hops
 
 COUNT_BY_LABEL = "MATCH (n:%s) RETURN count(*) AS total"
@@ -286,6 +295,12 @@ def entry_points(client: HydraClient, service_id: int) -> list[str]:
         for row in client.run(SERVICE_ENTRY_POINTS, {"service_id": service_id}).dicts()
         if row.get("version")
     ]
+
+
+def service_lookalikes(client: HydraClient, service_id: int) -> list[dict[str, Any]]:
+    """Packages this service ships that impersonate a far more popular name."""
+    rows = client.run(SERVICE_LOOKALIKES, {"service_id": service_id}).dicts()
+    return sorted(rows, key=lambda row: (row.get("downloads_ratio") or 0.0, row["version"]))
 
 
 def maintainer_reach(client: HydraClient, maintainer_id: int) -> list[dict[str, Any]]:

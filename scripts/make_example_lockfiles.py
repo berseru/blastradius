@@ -99,12 +99,28 @@ async def build(service: str, pins: dict[str, tuple[str, bool]]) -> dict:
     packages: dict[str, dict] = {}
     root_dependencies: dict[str, str] = {}
     root_dev: dict[str, str] = {}
+    # (name, version) -> {child name: requirement}. A real npm lockfile records
+    # these per entry, and they are the only thing that says *who* pulled a
+    # transitive package in - without them the tree is a flat bag of versions.
+    requirements: dict[tuple[str, str], dict[str, str]] = {}
 
     async with httpx.AsyncClient(timeout=60) as client:
         for name, (version, is_dev) in pins.items():
             document = await resolve(client, name, version)
             (root_dev if is_dev else root_dependencies)[name] = f"^{version}"
-            for node in document.get("nodes") or []:
+            nodes = document.get("nodes") or []
+            keys: list[tuple[str, str] | None] = []
+            for node in nodes:
+                key = node.get("versionKey") or {}
+                node_name, node_version = key.get("name"), key.get("version")
+                keys.append((node_name, node_version) if node_name and node_version else None)
+            for edge in document.get("edges") or []:
+                parent = keys[edge["fromNode"]] if edge.get("fromNode", -1) < len(keys) else None
+                child = keys[edge["toNode"]] if edge.get("toNode", -1) < len(keys) else None
+                if not parent or not child:
+                    continue
+                requirements.setdefault(parent, {})[child[0]] = edge.get("requirement") or "*"
+            for node in nodes:
                 node_name = (node.get("versionKey") or {}).get("name")
                 node_version = (node.get("versionKey") or {}).get("version")
                 if not node_name or not node_version:
@@ -123,6 +139,15 @@ async def build(service: str, pins: dict[str, tuple[str, bool]]) -> dict:
                     }
                 elif not is_dev:
                     entry.pop("dev", None)
+
+    # Attach each entry's requirement map, matched on the exact version that
+    # entry pins - a name alone would attach the wrong package's requirements
+    # whenever two versions of it coexist in the tree.
+    for path, entry in packages.items():
+        name = path.rsplit("node_modules/", 1)[-1]
+        entry_requirements = requirements.get((name, entry["version"]))
+        if entry_requirements:
+            entry["dependencies"] = dict(sorted(entry_requirements.items()))
 
     root: dict = {"name": service, "dependencies": root_dependencies}
     if root_dev:

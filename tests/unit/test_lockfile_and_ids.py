@@ -14,8 +14,12 @@ V3 = json.dumps(
         "lockfileVersion": 3,
         "packages": {
             "": {"name": "checkout-api", "dependencies": {"express": "^4.17.0"}},
-            "node_modules/express": {"version": "4.18.2"},
-            "node_modules/accepts": {"version": "1.3.8"},
+            "node_modules/express": {
+                "version": "4.18.2",
+                "dependencies": {"accepts": "~1.3.8", "debug": "2.6.9"},
+            },
+            "node_modules/accepts": {"version": "1.3.8", "dependencies": {"debug": "^4.0.0"}},
+            "node_modules/debug": {"version": "4.3.4"},
             "node_modules/express/node_modules/debug": {"version": "2.6.9"},
             "node_modules/typescript": {"version": "5.4.0", "dev": True},
             "node_modules/local-link": {"resolved": "../shared", "link": True},
@@ -30,7 +34,11 @@ V1 = json.dumps(
         "dependencies": {
             "express": {
                 "version": "4.16.0",
-                "dependencies": {"debug": {"version": "2.6.9"}},
+                "requires": {"debug": "2.6.9", "accepts": "~1.3.5"},
+                "dependencies": {
+                    "debug": {"version": "2.6.9"},
+                    "accepts": {"version": "1.3.5"},
+                },
             },
             "mocha": {"version": "9.0.0", "dev": True},
         },
@@ -48,6 +56,7 @@ class TestLockfile:
             "express@4.18.2",
             "accepts@1.3.8",
             "debug@2.6.9",
+            "debug@4.3.4",
             "typescript@5.4.0",
         }
 
@@ -87,6 +96,7 @@ class TestLockfile:
         assert {pin.key for pin in lock.pins} == {
             "express@4.16.0",
             "debug@2.6.9",
+            "accepts@1.3.5",
             "mocha@9.0.0",
         }
         assert {pin.name for pin in lock.direct} == {"express", "mocha"}
@@ -104,6 +114,65 @@ class TestLockfile:
             )
         )
         assert lock.pins[0].name == "@scope/b"
+
+
+class TestLockfileEdges:
+    """The edges are the product: without them nothing can be traversed."""
+
+    def test_v3_edges_use_the_versions_this_lockfile_pins(self):
+        lock = parse_lockfile(V3)
+        assert ("express@4.18.2", "accepts@1.3.8") in {
+            (edge.parent, edge.child) for edge in lock.edges
+        }
+
+    def test_nearest_nested_copy_wins_over_the_hoisted_one(self):
+        """`express` requires debug 2.6.9, nested next to it; the root has 4.3.4."""
+        lock = parse_lockfile(V3)
+        children = {
+            edge.child for edge in lock.edges if edge.parent == "express@4.18.2"
+        }
+        assert "debug@2.6.9" in children
+        assert "debug@4.3.4" not in children
+
+    def test_hoisted_copy_is_used_when_there_is_no_nested_one(self):
+        lock = parse_lockfile(V3)
+        children = {
+            edge.child for edge in lock.edges if edge.parent == "accepts@1.3.8"
+        }
+        assert children == {"debug@4.3.4"}
+
+    def test_requirement_is_carried_onto_the_edge(self):
+        lock = parse_lockfile(V3)
+        requirements = {
+            (edge.parent, edge.child): edge.requirement for edge in lock.edges
+        }
+        assert requirements[("express@4.18.2", "accepts@1.3.8")] == "~1.3.8"
+
+    def test_v1_requires_map_becomes_edges(self):
+        lock = parse_lockfile(V1)
+        pairs = {(edge.parent, edge.child) for edge in lock.edges}
+        assert ("express@4.16.0", "debug@2.6.9") in pairs
+        assert ("express@4.16.0", "accepts@1.3.5") in pairs
+
+    def test_no_self_edges_and_no_duplicates(self):
+        lock = parse_lockfile(V3)
+        pairs = [(edge.parent, edge.child) for edge in lock.edges]
+        assert len(pairs) == len(set(pairs))
+        assert all(parent != child for parent, child in pairs)
+
+    def test_unresolvable_requirement_produces_no_edge(self):
+        text = json.dumps(
+            {
+                "name": "svc",
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"name": "svc", "dependencies": {"a": "^1.0.0"}},
+                    "node_modules/a": {"version": "1.0.0", "dependencies": {"ghost": "^2"}},
+                },
+            }
+        )
+        lock = parse_lockfile(text)
+        assert lock.edges == []
 
 
 class TestIds:

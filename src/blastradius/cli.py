@@ -141,6 +141,10 @@ def verify(client: HydraClient) -> dict:
             windows = queries.exposure_windows(client, service_id)
             service.timings_ms["exposure_windows"] = (time.perf_counter() - started) * 1000
 
+            started = time.perf_counter()
+            lookalikes = queries.service_lookalikes(client, service_id)
+            service.timings_ms["lookalikes"] = (time.perf_counter() - started) * 1000
+
             # Sources are the versions an advisory names; targets are the
             # service's own direct dependencies. Pointing both ends at the same
             # set would return nothing, since a path needs two distinct nodes.
@@ -165,6 +169,8 @@ def verify(client: HydraClient) -> dict:
                 "choke_points": service.choke_points[:5],
                 "worst_exposure_days": windows[0]["exposed_days"] if windows else None,
                 "chains": [chain.render() for chain in service.chains[:5]],
+                "chain_count": len(service.chains),
+                "lookalikes": lookalikes[:5],
                 "timings_ms": {key: round(value, 1) for key, value in service.timings_ms.items()},
             }
         )

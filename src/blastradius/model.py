@@ -34,7 +34,7 @@ UPSERT_PACKAGES = """
 UNWIND $rows AS row
 MERGE (n {id: row.id})
 SET n:Pkg, n.name = row.name, n.version_count = row.version_count,
-    n.first_published = row.first_published
+    n.first_published = row.first_published, n.downloads = row.downloads
 """
 
 UPSERT_VERSIONS = """

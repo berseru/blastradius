@@ -56,8 +56,11 @@ TYPO_KEY = "selftest-lib-typo@9.9.9"
 CLEANUP = "UNWIND $rows AS row MATCH (n {id: row.vertex}) DETACH DELETE n"
 
 
-def _pkg(identifier: int, name: str, versions: int) -> dict[str, Any]:
-    return {"id": identifier, "name": name, "version_count": versions, "first_published": 1600000000}
+def _pkg(identifier: int, name: str, versions: int, downloads: int = 1000) -> dict[str, Any]:
+    return {
+        "id": identifier, "name": name, "version_count": versions,
+        "first_published": 1600000000, "downloads": downloads,
+    }
 
 
 def _ver(identifier: int, key: str, published: int) -> dict[str, Any]:
@@ -86,9 +89,9 @@ def fixture_rows() -> dict[str, list[dict[str, Any]]]:
     """Every row the self test writes, keyed by statement name in ``model``."""
     rows: dict[str, list[dict[str, Any]]] = {
         "packages": [
-            _pkg(PKG_APP, "selftest-app", 1),
-            _pkg(PKG_LIB, "selftest-lib", 2),
-            _pkg(PKG_TYPO, "selftest-lib-typo", 1),
+            _pkg(PKG_APP, "selftest-app", 1, downloads=42),
+            _pkg(PKG_LIB, "selftest-lib", 2, downloads=1_000_000),
+            _pkg(PKG_TYPO, "selftest-lib-typo", 1, downloads=1),
         ],
         "versions": [
             _ver(VER_APP, APP_KEY, 1700000000),
@@ -110,7 +113,7 @@ def fixture_rows() -> dict[str, list[dict[str, Any]]]:
             },
         ],
         "services": [
-            {"id": SVC, "name": "selftest-service", "pin_count": 2, "captured_at": 1760000000},
+            {"id": SVC, "name": "selftest-service", "pin_count": 3, "captured_at": 1760000000},
         ],
         "of": [
             _of(VER_APP, PKG_APP, "selftest-app"),
@@ -131,6 +134,10 @@ def fixture_rows() -> dict[str, list[dict[str, Any]]]:
             {
                 "service_id": SVC, "version_id": VER_LIB, "direct": False, "dev": False,
                 "edge_id": model.edge_id(SVC, VER_LIB, "USES"),
+            },
+            {
+                "service_id": SVC, "version_id": VER_TYPO, "direct": False, "dev": False,
+                "edge_id": model.edge_id(SVC, VER_TYPO, "USES"),
             },
         ],
         "maintains": [
@@ -157,10 +164,19 @@ def fixture_rows() -> dict[str, list[dict[str, Any]]]:
             },
         ],
         "similar": [
+            # Both directions are written on purpose: the ingest emits
+            # suspect -> popular, while the neighbour lookup below walks out of
+            # the popular package, and a one-way edge would make one of the two
+            # queries silently return nothing.
             {
                 "from_id": PKG_LIB, "to_id": PKG_TYPO, "distance": 5,
                 "downloads_ratio": 0.001,
                 "edge_id": model.edge_id(PKG_LIB, PKG_TYPO, "SIMILAR"),
+            },
+            {
+                "from_id": PKG_TYPO, "to_id": PKG_LIB, "distance": 1,
+                "downloads_ratio": 0.000001,
+                "edge_id": model.edge_id(PKG_TYPO, PKG_LIB, "SIMILAR"),
             },
         ],
     }
@@ -256,7 +272,7 @@ def run_selftest(client: HydraClient) -> SelfTestReport:
         sizes = queries.graph_size(client)
         expected = {
             "Pkg": 3, "Ver": 4, "Maint": 1, "Adv": 2, "Svc": 1,
-            "OF": 4, "DEPENDS": 3, "USES": 2, "MAINTAINS": 1, "AFFECTS": 3, "SIMILAR": 1,
+            "OF": 4, "DEPENDS": 3, "USES": 3, "MAINTAINS": 1, "AFFECTS": 3, "SIMILAR": 2,
         }
         missing = {
             key: (sizes.get(key), value)
@@ -333,6 +349,16 @@ def run_selftest(client: HydraClient) -> SelfTestReport:
         return str(names)
 
     _run_check(report, "typosquat_neighbours", "read", typos)
+
+    def lookalikes() -> str:
+        found = queries.service_lookalikes(client, SVC)
+        pairs = [(row.get("suspect"), row.get("looks_like")) for row in found]
+        assert ("selftest-lib-typo", "selftest-lib") in pairs, f"lookalikes came back as {pairs}"
+        row = next(row for row in found if row.get("suspect") == "selftest-lib-typo")
+        assert row.get("target_downloads") == 1_000_000, f"downloads did not survive: {row}"
+        return str(pairs)
+
+    _run_check(report, "service_lookalikes", "read", lookalikes)
 
     def chains() -> str:
         found = queries.blast_radius(client, [PATCH_KEY, TYPO_KEY], [APP_KEY], max_len=6)

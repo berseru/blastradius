@@ -12,6 +12,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 from . import model
 from .hydra import HydraClient
@@ -19,6 +20,7 @@ from .ids import IdBook
 from .lockfile import Lockfile
 from .npmdata import Fetcher, PackageMeta, ResolvedGraph
 from .osv import Advisory, iter_advisories
+from .typosquat import UNKNOWN_DOWNLOADS, find_typosquats
 from .versions import is_affected
 
 # HydraDB has no null property value, so "we do not know when this was
@@ -65,6 +67,7 @@ class IngestStats:
     advisories_scanned: int = 0
     advisories_kept: int = 0
     affects_edges: int = 0
+    similar_edges: int = 0
     rows_written: int = 0
     fetch_seconds: float = 0.0
     parse_seconds: float = 0.0
@@ -79,6 +82,7 @@ class IngestStats:
             "advisories_scanned": self.advisories_scanned,
             "advisories_kept": self.advisories_kept,
             "affects_edges": self.affects_edges,
+            "similar_edges": self.similar_edges,
             "rows_written": self.rows_written,
             "fetch_seconds": round(self.fetch_seconds, 2),
             "parse_seconds": round(self.parse_seconds, 2),
@@ -105,23 +109,28 @@ def read_seeds(path: str | Path, limit: int | None = None) -> list[tuple[str, st
 
 
 async def fetch_inputs(
-    seeds: list[tuple[str, str]], cache_dir: str | Path
-) -> tuple[dict[str, PackageMeta], list[ResolvedGraph]]:
+    seeds: list[tuple[str, str]],
+    cache_dir: str | Path,
+    extra_names: Iterable[str] = (),
+) -> tuple[dict[str, PackageMeta], list[ResolvedGraph], dict[str, int]]:
     """Resolve the seeds first, then fetch metadata for everything they pull in.
 
     The order matters: the transitive closure is only known after resolution,
-    and it is far larger than the seed list.
+    and it is far larger than the seed list. ``extra_names`` carries the packages
+    that only appear in a lockfile, which still need metadata and download
+    counts even though no seed pulls them in.
     """
     async with Fetcher(cache_dir=cache_dir) as fetcher:
         resolved = await fetcher.gather_resolved(seeds)
-        names = {name for name, _ in seeds}
+        names = {name for name, _ in seeds} | set(extra_names)
         for graph in resolved:
             names.update(name for name, _version in graph.nodes)
         metas = await fetcher.gather_package_meta(sorted(names))
+        downloads = await fetcher.weekly_downloads(sorted(names | set(metas)))
         if fetcher.failures:
             print(f"  {len(fetcher.failures)} fetches failed, e.g. {fetcher.failures[:3]}",
                   flush=True)
-    return metas, resolved
+    return metas, resolved, downloads
 
 
 def build_rows(
@@ -131,12 +140,14 @@ def build_rows(
     advisories: dict[str, list[Advisory]],
     lockfiles: list[Lockfile],
     *,
+    downloads: dict[str, int] | None = None,
     captured_at: int | None = None,
 ) -> tuple[Rows, IngestStats, IdBook]:
     """Assemble every row. Pure function of its inputs, so it is testable."""
     rows, book = Rows(), IdBook()
     stats = IngestStats(seeds=len(seeds))
     captured_at = captured_at or int(time.time())
+    downloads = downloads or {}
 
     versions_by_package: dict[str, set[str]] = defaultdict(set)
     for graph in resolved:
@@ -157,6 +168,7 @@ def build_rows(
                 "name": name,
                 "version_count": len(meta.versions) if meta else len(versions),
                 "first_published": (meta.first_published if meta else 0) or UNKNOWN_TIME,
+                "downloads": int(downloads.get(name, UNKNOWN_DOWNLOADS)),
             },
         )
         for version in sorted(versions):
@@ -199,7 +211,35 @@ def build_rows(
     stats.versions = len(rows.buckets["versions"])
 
     # -- dependency edges -------------------------------------------------
+    # Lockfile edges come first and are marked `direct` when the parent is a
+    # version the service pins itself. They are the ones that matter: the
+    # registry resolution below describes *today's* releases of the seeds, which
+    # are usually newer than what a real deployment ships, so on their own they
+    # leave every pinned version without an outgoing edge and every blast-radius
+    # traversal dead on arrival (measured 2026-08-14: 0 chains, depth 0 only).
     seen_edges: set[int] = set()
+    for lock in lockfiles:
+        direct_keys = {pin.key for pin in lock.direct}
+        for edge in lock.edges:
+            parent_name, _, parent_version = edge.parent.rpartition("@")
+            child_name, _, child_version = edge.child.rpartition("@")
+            from_id = book.version(parent_name, parent_version)
+            to_id = book.version(child_name, child_version)
+            identifier = model.edge_id(from_id, to_id, "DEPENDS")
+            if identifier in seen_edges:
+                continue
+            seen_edges.add(identifier)
+            rows.add(
+                "depends",
+                {
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "edge_id": identifier,
+                    "requirement": edge.requirement or "",
+                    "direct": edge.parent in direct_keys,
+                },
+            )
+
     for graph in resolved:
         for parent_key, child_key, requirement in graph.edge_keys():
             parent_name, _, parent_version = parent_key.rpartition("@")
@@ -282,8 +322,33 @@ def build_rows(
                     },
                 )
 
+    # -- typosquat edges --------------------------------------------------
+    # Run last, because "already known to be malware" is one of the signals and
+    # that is only known once the advisories have been matched.
+    malicious_names = {
+        name
+        for name, package_advisories in advisories.items()
+        if any(advisory.is_malicious for advisory in package_advisories)
+    }
+    for pair in find_typosquats(
+        versions_by_package, downloads, always_suspect=malicious_names
+    ):
+        from_id = book.package(pair.suspect)
+        to_id = book.package(pair.target)
+        rows.add(
+            "similar",
+            {
+                "from_id": from_id,
+                "to_id": to_id,
+                "edge_id": model.edge_id(from_id, to_id, "SIMILAR"),
+                "distance": pair.distance,
+                "downloads_ratio": pair.downloads_ratio,
+            },
+        )
+
     stats.advisories_kept = len(rows.buckets["advisories"])
     stats.affects_edges = len(rows.buckets["affects"])
+    stats.similar_edges = len(rows.buckets["similar"])
     return rows, stats, book
 
 
@@ -355,8 +420,12 @@ def ingest(
     seeds = read_seeds(seeds_path, limit)
     print(f"seeds: {len(seeds)}", flush=True)
 
+    lock_names: set[str] = set()
+    for lock in lockfiles:
+        lock_names |= lock.names()
+
     started = time.perf_counter()
-    metas, resolved = asyncio.run(fetch_inputs(seeds, cache_dir))
+    metas, resolved, downloads = asyncio.run(fetch_inputs(seeds, cache_dir, lock_names))
     fetch_seconds = time.perf_counter() - started
     print(f"fetched {len(metas)} packuments, {len(resolved)} resolved graphs "
           f"in {fetch_seconds:.1f}s", flush=True)
@@ -371,7 +440,9 @@ def ingest(
     print(f"scanned {scanned:,} advisories in {parse_seconds:.1f}s, "
           f"{len(advisories)} of our packages are named", flush=True)
 
-    rows, stats, _book = build_rows(seeds, metas, resolved, advisories, lockfiles)
+    rows, stats, _book = build_rows(
+        seeds, metas, resolved, advisories, lockfiles, downloads=downloads
+    )
     stats.fetch_seconds = fetch_seconds
     stats.parse_seconds = parse_seconds
     stats.advisories_scanned = scanned

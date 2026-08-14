@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ import httpx
 from .osv import parse_timestamp
 
 REGISTRY_URL = "https://registry.npmjs.org"
+DOWNLOADS_URL = "https://api.npmjs.org/downloads/point/last-week"
 DEPSDEV_URL = "https://api.deps.dev/v3alpha"
 USER_AGENT = "blastradius/0.1 (+https://github.com/blastradius)"
 
@@ -203,6 +205,47 @@ class Fetcher:
                 )
             )
         return ResolvedGraph(root=(name, version), nodes=nodes, edges=edges)
+
+    async def weekly_downloads(self, names: Iterable[str]) -> dict[str, int]:
+        """Last week's download count per package, from npm's public counter.
+
+        Popularity is what separates a typosquat from an ordinary small library,
+        so it is measured rather than assumed. The bulk endpoint takes many
+        unscoped names at once; scoped names have to be asked for one by one,
+        which is why the two are split here.
+        """
+        unique = sorted({name for name in names if name})
+        scoped = [name for name in unique if name.startswith("@")]
+        plain = [name for name in unique if not name.startswith("@")]
+        # 64 keeps the URL well inside the length the endpoint accepts.
+        batches = [plain[index : index + 64] for index in range(0, len(plain), 64)]
+        payloads = await asyncio.gather(
+            *(self._downloads_batch(batch) for batch in batches),
+            *(self._downloads_batch([name]) for name in scoped),
+        )
+        counts: dict[str, int] = {}
+        for payload in payloads:
+            counts.update(payload)
+        return counts
+
+    async def _downloads_batch(self, batch: list[str]) -> dict[str, int]:
+        if not batch:
+            return {}
+        digest = hashlib.sha1(",".join(batch).encode("utf-8")).hexdigest()[:12]
+        url = f"{DOWNLOADS_URL}/{','.join(batch)}"
+        document = await self._get_json(url, "downloads", f"{batch[0]}-{len(batch)}-{digest}")
+        if not isinstance(document, dict) or not document:
+            return {}
+        # One name in the path returns a single record, several return a map of
+        # them, and a name the counter has never seen returns null in that map.
+        if "downloads" in document and "package" in document:
+            name = document.get("package") or batch[0]
+            return {str(name): int(document.get("downloads") or 0)}
+        counts: dict[str, int] = {}
+        for name, record in document.items():
+            if isinstance(record, dict):
+                counts[name] = int(record.get("downloads") or 0)
+        return counts
 
     async def gather_package_meta(self, names: Iterable[str]) -> dict[str, PackageMeta]:
         unique = sorted(set(names))
