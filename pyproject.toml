@@ -1,0 +1,32 @@
+[project]
+name = "blastradius"
+version = "0.1.0"
+description = "Supply-chain blast radius over a temporal dependency graph, built on HydraDB"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "berseru" }]
+keywords = ["supply-chain", "npm", "graph", "hydradb", "osv", "security"]
+dependencies = [
+    "httpx>=0.28.1",
+    "node-semver>=0.9.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+blastradius = "blastradius.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blastradius"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
