@@ -137,6 +137,13 @@ every registry response under `data/cache/`, so re-runs are cheap and offline.
 blastradius serve                     # http://127.0.0.1:8080
 ```
 
+![the service view](docs/screenshots/service-view.png)
+
+Every screenshot in `docs/screenshots/` is the real page rendered against
+`artifacts/api-samples/` from a CI run — the same 2,278-package graph the numbers
+below come from, not a mock-up. `serve --selfcheck --dump-dir` writes those
+payloads, since CI is the only place a populated graph exists.
+
 Four views over the same graph, no build step and no extra dependency — the API
 is `http.server`, the page is one HTML file:
 
@@ -150,6 +157,10 @@ is `http.server`, the page is one HTML file:
 
 Search is a prefix query against the graph (`WHERE name STARTS WITH`), not a
 filter in Python.
+
+| ![package view](docs/screenshots/package-view.png) | ![lookalike view](docs/screenshots/lookalikes-view.png) |
+|---|---|
+| `axioss` — malicious, no fix, one npm account away | every lookalike pair with both download counts |
 
 ```bash
 blastradius serve --selfcheck         # drive every route once, then exit
