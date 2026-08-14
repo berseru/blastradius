@@ -145,6 +145,70 @@ RETURN v.key AS version, p.name AS suspect, target.name AS looks_like,
        p.downloads AS suspect_downloads, target.downloads AS target_downloads
 """
 
+# --------------------------------------------------------------------------
+# 8. Lookups the UI needs. Nodes match on inline non-id properties and `WHERE`
+#    takes `STARTS WITH`, so search is a database operation rather than a scan
+#    in Python: `IN`/`CONTAINS` are unsupported, prefix matching is not.
+# --------------------------------------------------------------------------
+
+SERVICE_LIST = """
+MATCH (s:Svc)
+RETURN s.id AS id, s.name AS name, s.pin_count AS pin_count, s.captured_at AS captured_at
+ORDER BY name
+"""
+
+PACKAGE_SEARCH = """
+MATCH (p:Pkg) WHERE p.name STARTS WITH $prefix
+RETURN p.name AS name, p.downloads AS downloads, p.version_count AS version_count
+ORDER BY name LIMIT $limit
+"""
+
+PACKAGE_VERSIONS = """
+MATCH (p:Pkg {name: $name})<-[:OF]-(v:Ver)
+RETURN v.key AS version, v.published_at AS published_at
+"""
+
+PACKAGE_ADVISORIES = """
+MATCH (p:Pkg {name: $name})<-[:OF]-(v:Ver)<-[a:AFFECTS]-(adv:Adv)
+RETURN v.key AS version, adv.osv AS advisory, adv.kind AS kind,
+       adv.severity AS severity, adv.has_fix AS has_fix,
+       adv.published_at AS disclosed_at
+"""
+
+PACKAGE_SERVICES = """
+MATCH (p:Pkg {name: $name})<-[:OF]-(v:Ver)<-[u:USES]-(s:Svc)
+RETURN s.name AS service, v.key AS version, u.direct AS direct, u.dev AS dev
+"""
+
+PACKAGE_MAINTAINERS = """
+MATCH (p:Pkg {name: $name})<-[m:MAINTAINS]-(maint:Maint)
+RETURN maint.login AS login, maint.package_count AS package_count
+"""
+
+MAINTAINER_SEARCH = """
+MATCH (m:Maint) WHERE m.login STARTS WITH $prefix
+RETURN m.login AS login, m.package_count AS package_count
+ORDER BY login LIMIT $limit
+"""
+
+MAINTAINER_REACH_BY_LOGIN = """
+MATCH (m:Maint {login: $login})-[:MAINTAINS]->(p:Pkg)<-[:OF]-(v:Ver)<-[u:USES]-(s:Svc)
+RETURN s.name AS service, p.name AS package, v.key AS version, u.direct AS direct
+"""
+
+TYPOSQUAT_NEIGHBOURS_BY_NAME = """
+MATCH (p:Pkg {name: $name})-[r:SIMILAR]->(target:Pkg)
+RETURN target.name AS looks_like, r.distance AS distance,
+       r.downloads_ratio AS downloads_ratio, target.downloads AS target_downloads
+"""
+
+LOOKALIKES_ALL = """
+MATCH (suspect:Pkg)-[r:SIMILAR]->(target:Pkg)
+RETURN suspect.name AS suspect, target.name AS looks_like,
+       r.distance AS distance, r.downloads_ratio AS downloads_ratio,
+       suspect.downloads AS suspect_downloads, target.downloads AS target_downloads
+"""
+
 MAX_TRAVERSAL_HOPS = 16  # server default for max_traversal_hops
 
 COUNT_BY_LABEL = "MATCH (n:%s) RETURN count(*) AS total"

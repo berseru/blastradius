@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>blastradius — supply-chain reachability on HydraDB</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #11171f;
+    --panel-2: #151d27;
+    --line: #1f2a37;
+    --text: #dde5ee;
+    --muted: #8296ad;
+    --accent: #4cc2ff;
+    --bad: #ff5f56;
+    --warn: #ffb02e;
+    --ok: #3ddc97;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+  a { color: var(--accent); }
+  header {
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline;
+    padding: 18px 24px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #101823, #0b0f14);
+  }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+  header h1 span { color: var(--accent); }
+  header .tag { color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  .pill {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px;
+    background: var(--panel);
+  }
+  main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 62px); }
+  aside { border-right: 1px solid var(--line); padding: 18px; background: var(--panel); }
+  aside h2, section h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  .search { position: relative; margin-bottom: 20px; }
+  .search input {
+    width: 100%; padding: 9px 11px; border-radius: 8px; color: var(--text);
+    background: var(--panel-2); border: 1px solid var(--line); font-family: var(--mono);
+    font-size: 13px;
+  }
+  .search input:focus { outline: none; border-color: var(--accent); }
+  .results { margin-top: 8px; max-height: 260px; overflow: auto; }
+  .results button {
+    display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left;
+    background: none; border: 0; border-radius: 6px; color: var(--text); cursor: pointer;
+    padding: 6px 8px; font-family: var(--mono); font-size: 12px;
+  }
+  .results button:hover { background: var(--panel-2); }
+  .results .meta { color: var(--muted); }
+  .svc {
+    display: block; width: 100%; text-align: left; cursor: pointer; margin-bottom: 8px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 12px; color: var(--text);
+  }
+  .svc:hover { border-color: #2c3d52; }
+  .svc.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(76,194,255,.25); }
+  .svc .name { font-family: var(--mono); font-size: 13px; }
+  .svc .row { display: flex; gap: 10px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .svc .row b { color: var(--text); font-weight: 600; }
+  .svc .row .mal { color: var(--bad); }
+  section { padding: 22px 26px 60px; overflow: auto; }
+  .headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+  .headline h3 { margin: 0; font-size: 22px; font-family: var(--mono); letter-spacing: -0.01em; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 18px 0 26px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+  }
+  .card .n { font-size: 26px; font-family: var(--mono); }
+  .card .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; margin-top: 2px; }
+  .card.bad .n { color: var(--bad); }
+  .card.warn .n { color: var(--warn); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 22px; }
+  .block { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .bar { display: grid; grid-template-columns: 190px 1fr 46px; gap: 10px; align-items: center; margin-bottom: 7px; font-family: var(--mono); font-size: 12px; }
+  .bar .track { display: block; height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+  .bar .fill { display: block; height: 8px; background: linear-gradient(90deg, #2b7fb8, var(--accent)); }
+  .bar .v { text-align: right; color: var(--muted); }
+  .chain { font-family: var(--mono); font-size: 12px; padding: 9px 0; border-bottom: 1px dashed var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .chain:last-child { border-bottom: 0; }
+  .hop { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; }
+  .hop.src { border-color: #5c2b2b; color: #ffb3ae; }
+  .hop.dst { border-color: #245b47; color: #a7ecd0; }
+  .arrow { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+  td { padding: 6px 8px; border-bottom: 1px solid #16202c; }
+  tr:hover td { background: var(--panel-2); }
+  .kind-malicious { color: var(--bad); }
+  .nofix { color: var(--warn); }
+  .clickable { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .look { display: flex; justify-content: space-between; gap: 10px; font-family: var(--mono); font-size: 12px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+  .look:last-child { border-bottom: 0; }
+  .look .s { color: var(--bad); }
+  .look .t { color: var(--ok); }
+  .foot { margin-top: 26px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .empty { color: var(--muted); font-size: 13px; }
+  .scroll { max-height: 380px; overflow: auto; }
+  .crumbs { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .crumbs button { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>blast<span>radius</span></h1>
+  <div class="tag">which of my services is exposed, through which chain, and since when</div>
+  <div class="spacer"></div>
+  <div class="pill" id="graph-pill">connecting…</div>
+</header>
+
+<main>
+  <aside>
+    <h2>Search the graph</h2>
+    <div class="search">
+      <input id="q" placeholder="package or maintainer prefix…" autocomplete="off" spellcheck="false" />
+      <div class="results" id="results"></div>
+    </div>
+    <h2>Example services</h2>
+    <div id="services"></div>
+    <h2 style="margin-top:20px">Corpus</h2>
+    <button class="svc" onclick="showLookalikes()"><span class="name">every lookalike pair</span>
+      <div class="row">SIMILAR edges in the graph</div></button>
+  </aside>
+
+  <section id="view"><p class="empty">Loading…</p></section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const num = (value) => (value === null || value === undefined || value < 0 ? "?" : Number(value).toLocaleString("en-US"));
+const day = (seconds) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "unknown");
+
+async function api(path) {
+  const response = await fetch(path);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || response.statusText);
+  return payload;
+}
+
+function bars(rows, label, value, max) {
+  const top = max || Math.max(...rows.map((row) => row[value] || 0), 1);
+  return rows.map((row) => `
+    <div class="bar">
+      <span title="${esc(row[label])}">${esc(row[label])}</span>
+      <span class="track"><span class="fill" style="width:${Math.max(2, (100 * (row[value] || 0)) / top)}%"></span></span>
+      <span class="v">${num(row[value])}</span>
+    </div>`).join("");
+}
+
+function chainHtml(chain) {
+  const hops = chain.keys.map((key, index) => {
+    const cls = index === 0 ? "hop src" : index === chain.keys.length - 1 ? "hop dst" : "hop";
+    return `<span class="${cls} clickable" onclick="showPackage('${esc(key.split('@').slice(0, -1).join('@') || key)}')">${esc(key)}</span>`;
+  });
+  return `<div class="chain">${hops.join('<span class="arrow">→</span>')}</div>`;
+}
+
+function timingFoot(timings, extra) {
+  const parts = Object.entries(timings || {}).map(([key, value]) => `${key} ${value} ms`);
+  return `<div class="foot">${extra ? esc(extra) + " · " : ""}${parts.join(" · ")}</div>`;
+}
+
+// -- views ----------------------------------------------------------------
+
+async function boot() {
+  try {
+    const health = await api("/api/health");
+    const g = health.graph;
+    $("graph-pill").textContent =
+      `${num(g.Pkg)} packages · ${num(g.Ver)} versions · ${num(g.DEPENDS)} depends · ${num(g.Adv)} advisories · ${num(g.SIMILAR)} lookalikes`;
+    const { services } = await api("/api/services");
+    $("services").innerHTML = services.map((service) => `
+      <button class="svc" id="svc-${esc(service.service)}" onclick="showService('${esc(service.service)}')">
+        <span class="name">${esc(service.service)}</span>
+        <div class="row">
+          <span><b>${num(service.pinned_versions)}</b> pins</span>
+          <span><b>${num(service.hits)}</b> hits</span>
+          ${service.malicious ? `<span class="mal"><b>${num(service.malicious)}</b> malware</span>` : ""}
+        </div>
+      </button>`).join("");
+    if (services.length) showService(services[services.length - 1].service);
+  } catch (error) {
+    $("view").innerHTML = `<p class="empty">Cannot reach the API: ${esc(error.message)}</p>`;
+  }
+}
+
+async function showService(name) {
+  const view = $("view");
+  view.innerHTML = `<p class="empty">Running six traversals against HydraDB…</p>`;
+  document.querySelectorAll(".svc").forEach((node) => node.classList.remove("active"));
+  const active = $(`svc-${name}`);
+  if (active) active.classList.add("active");
+  try {
+    const data = await api(`/api/services/${encodeURIComponent(name)}`);
+    const depth = Object.entries(data.depth_profile).map(([hops, hits]) => ({ hops: `${hops} hop${hops === "1" ? "" : "s"} out`, hits: hits }));
+    view.innerHTML = `
+      <div class="headline"><h3>${esc(data.service)}</h3>
+        <span class="pill">${data.counts.hits} advisory hit${data.counts.hits === 1 ? "" : "s"} · ${data.counts.chains} chain${data.counts.chains === 1 ? "" : "s"}</span></div>
+      <div class="cards">
+        <div class="card"><div class="n">${num(data.counts.hits)}</div><div class="l">pinned versions an advisory names</div></div>
+        <div class="card bad"><div class="n">${num(data.counts.malicious)}</div><div class="l">known malicious packages</div></div>
+        <div class="card warn"><div class="n">${num(data.counts.unfixable)}</div><div class="l">with no fixed version to move to</div></div>
+        <div class="card"><div class="n">${num(data.counts.chains)}</div><div class="l">dependency chains that drag them in</div></div>
+      </div>
+      <div class="grid2">
+        <div class="block"><h2>How deep the exposure sits</h2>${depth.length ? bars(depth, "hops", "hits") : '<p class="empty">nothing beyond the direct pins</p>'}</div>
+        <div class="block"><h2>Choke points — most paths run through these</h2>${data.choke_points.length ? bars(data.choke_points.map((row) => ({ version: row.version, reached_through: row.reached_through })), "version", "reached_through") : '<p class="empty">no transitive paths</p>'}</div>
+      </div>
+      <div class="grid2" style="margin-top:22px">
+        <div class="block"><h2>Chains: from the bad version to what you ship</h2>
+          <div class="scroll">${data.chains.length ? data.chains.map(chainHtml).join("") : '<p class="empty">every hit is a direct pin</p>'}</div></div>
+        <div class="block"><h2>Names impersonating a popular package</h2>
+          ${data.lookalikes.length ? data.lookalikes.map((row) => `
+            <div class="look">
+              <span><span class="s clickable" onclick="showPackage('${esc(row.suspect)}')">${esc(row.suspect)}</span>
+                <span class="arrow">looks like</span>
+                <span class="t clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</span></span>
+              <span class="v" style="color:var(--muted)">${num(row.suspect_downloads)} vs ${num(row.target_downloads)} weekly</span>
+            </div>`).join("") : '<p class="empty">no lookalike names in this tree</p>'}
+        </div>
+      </div>
+      <div class="block" style="margin-top:22px"><h2>Every hit, and whether there is anywhere to upgrade to</h2>
+        <div class="scroll"><table><thead><tr>
+          <th>version</th><th>advisory</th><th>kind</th><th>severity</th><th>fix</th><th>disclosed</th><th>pin</th>
+        </tr></thead><tbody>
+        ${data.hits.map((hit) => `<tr>
+          <td class="clickable" onclick="showPackage('${esc(hit.version.split("@").slice(0, -1).join("@"))}')">${esc(hit.version)}</td>
+          <td>${esc(hit.advisory)}</td>
+          <td class="kind-${esc(hit.kind)}">${esc(hit.kind)}</td>
+          <td>${esc(hit.severity)}</td>
+          <td class="${hit.has_fix ? "" : "nofix"}">${hit.has_fix ? "available" : "none"}</td>
+          <td>${day(hit.disclosed_at)}</td>
+          <td>${hit.direct ? "direct" : "transitive"}${hit.dev ? " · dev" : ""}</td>
+        </tr>`).join("")}
+        </tbody></table></div>
+      </div>
+      ${data.exposure.length ? `<div class="block" style="margin-top:22px"><h2>Longest exposure windows (days between disclosure and this snapshot)</h2>
+        ${bars(data.exposure.map((row) => ({ label: `${row.version} · ${row.advisory}`, days: row.exposed_days })), "label", "days")}</div>` : ""}
+      ${timingFoot(data.timings_ms, "every number above came from one HydraDB query each")}`;
+  } catch (error) {
+    view.innerHTML = `<p class="empty">${esc(error.message)}</p>`;
+  }
+}
+
+async function showPackage(name) {
+  if (!name) return;
+  const view = $("view");
+  view.innerHTML = `<p class="empty">Looking up ${esc(name)}…</p>`;
+  try {
+    const data = await api(`/api/packages/${encodeURIComponent(name)}`);
+    const malicious = data.advisories.filter((row) => row.kind === "malicious").length;
+    view.innerHTML = `
+      <div class="crumbs"><button onclick="boot()">← services</button> / package</div>
+      <div class="headline"><h3>${esc(data.package)}</h3>
+        <span class="pill">${data.versions.length} version${data.versions.length === 1 ? "" : "s"} in the graph</span></div>
+      <div class="cards">
+        <div class="card"><div class="n">${num(data.shipped_by.length)}</div><div class="l">service pins of this package</div></div>
+        <div class="card bad"><div class="n">${num(malicious)}</div><div class="l">malicious advisories</div></div>
+        <div class="card"><div class="n">${num(data.advisories.length)}</div><div class="l">advisories naming a version</div></div>
+        <div class="card"><div class="n">${num(data.chain_count)}</div><div class="l">chains into a service</div></div>
+      </div>
+      <div class="grid2">
+        <div class="block"><h2>Chains into the services</h2>
+          <div class="scroll">${data.chains.length ? data.chains.map(chainHtml).join("") : '<p class="empty">no chain into an example service</p>'}</div></div>
+        <div class="block"><h2>Who can publish it</h2>
+          ${data.maintainers.length ? data.maintainers.map((row) => `<div class="look">
+            <span class="clickable" onclick="showMaintainer('${esc(row.login)}')">${esc(row.login)}</span>
+            <span style="color:var(--muted)">${num(row.package_count)} packages</span></div>`).join("") : '<p class="empty">no maintainer recorded</p>'}
+          ${data.lookalikes.length ? `<h2 style="margin-top:16px">Impersonates</h2>${data.lookalikes.map((row) => `<div class="look">
+            <span class="t clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</span>
+            <span style="color:var(--muted)">distance ${esc(row.distance)} · ${num(row.target_downloads)} weekly</span></div>`).join("")}` : ""}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:22px">
+        <div class="block"><h2>Advisories</h2><div class="scroll"><table><thead><tr>
+            <th>version</th><th>advisory</th><th>kind</th><th>severity</th><th>fix</th><th>disclosed</th></tr></thead><tbody>
+            ${data.advisories.map((row) => `<tr><td>${esc(row.version)}</td><td>${esc(row.advisory)}</td>
+              <td class="kind-${esc(row.kind)}">${esc(row.kind)}</td><td>${esc(row.severity)}</td>
+              <td class="${row.has_fix ? "" : "nofix"}">${row.has_fix ? "available" : "none"}</td>
+              <td>${day(row.disclosed_at)}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">clean</td></tr>'}
+          </tbody></table></div></div>
+        <div class="block"><h2>Pinned by</h2><div class="scroll"><table><thead><tr>
+            <th>service</th><th>version</th><th>pin</th></tr></thead><tbody>
+            ${data.shipped_by.map((row) => `<tr><td class="clickable" onclick="showService('${esc(row.service)}')">${esc(row.service)}</td>
+              <td>${esc(row.version)}</td><td>${row.direct ? "direct" : "transitive"}${row.dev ? " · dev" : ""}</td></tr>`).join("")
+              || '<tr><td colspan="3" class="empty">not pinned by any example service</td></tr>'}
+          </tbody></table></div></div>
+      </div>
+      ${timingFoot(data.timings_ms)}`;
+  } catch (error) {
+    view.innerHTML = `<p class="empty">${esc(error.message)}</p>`;
+  }
+}
+
+async function showMaintainer(login) {
+  const view = $("view");
+  view.innerHTML = `<p class="empty">If ${esc(login)} were taken over…</p>`;
+  try {
+    const data = await api(`/api/maintainers/${encodeURIComponent(login)}`);
+    view.innerHTML = `
+      <div class="crumbs"><button onclick="boot()">← services</button> / maintainer</div>
+      <div class="headline"><h3>${esc(data.maintainer)}</h3>
+        <span class="pill">account takeover reach</span></div>
+      <div class="cards">
+        <div class="card bad"><div class="n">${num(data.counts.services)}</div><div class="l">services reached</div></div>
+        <div class="card"><div class="n">${num(data.counts.packages)}</div><div class="l">packages they can publish</div></div>
+        <div class="card"><div class="n">${num(data.counts.versions)}</div><div class="l">pinned versions affected</div></div>
+      </div>
+      <div class="block"><h2>What one compromised account would touch</h2>
+        <div class="scroll"><table><thead><tr><th>service</th><th>package</th><th>version</th><th>pin</th></tr></thead><tbody>
+          ${data.reach.map((row) => `<tr>
+            <td class="clickable" onclick="showService('${esc(row.service)}')">${esc(row.service)}</td>
+            <td class="clickable" onclick="showPackage('${esc(row.package)}')">${esc(row.package)}</td>
+            <td>${esc(row.version)}</td><td>${row.direct ? "direct" : "transitive"}</td></tr>`).join("")
+            || '<tr><td colspan="4" class="empty">no reach into the example services</td></tr>'}
+        </tbody></table></div></div>
+      ${timingFoot(data.timings_ms)}`;
+  } catch (error) {
+    view.innerHTML = `<p class="empty">${esc(error.message)}</p>`;
+  }
+}
+
+async function showLookalikes() {
+  const view = $("view");
+  view.innerHTML = `<p class="empty">Reading every SIMILAR edge…</p>`;
+  try {
+    const data = await api("/api/lookalikes");
+    view.innerHTML = `
+      <div class="headline"><h3>lookalike names</h3><span class="pill">${data.count} SIMILAR edges</span></div>
+      <div class="block" style="margin-top:18px"><h2>One edit apart, and one is far more installed</h2>
+        <table><thead><tr><th>suspect</th><th>weekly</th><th>impersonates</th><th>weekly</th><th>distance</th><th>ratio</th></tr></thead><tbody>
+        ${data.lookalikes.map((row) => `<tr>
+          <td class="kind-malicious clickable" onclick="showPackage('${esc(row.suspect)}')">${esc(row.suspect)}</td>
+          <td>${num(row.suspect_downloads)}</td>
+          <td class="clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</td>
+          <td>${num(row.target_downloads)}</td>
+          <td>${esc(row.distance)}</td>
+          <td>${Number(row.downloads_ratio).toExponential(1)}</td></tr>`).join("")
+          || '<tr><td colspan="6" class="empty">no SIMILAR edges in this graph</td></tr>'}
+      </tbody></table></div>`;
+  } catch (error) {
+    view.innerHTML = `<p class="empty">${esc(error.message)}</p>`;
+  }
+}
+
+// -- search ---------------------------------------------------------------
+
+let searchTimer = null;
+$("q").addEventListener("input", (event) => {
+  const prefix = event.target.value.trim();
+  clearTimeout(searchTimer);
+  if (prefix.length < 2) { $("results").innerHTML = ""; return; }
+  searchTimer = setTimeout(async () => {
+    try {
+      const data = await api(`/api/search?q=${encodeURIComponent(prefix)}`);
+      const packages = data.packages.map((row) => `
+        <button onclick="showPackage('${esc(row.name)}')"><span>${esc(row.name)}</span>
+          <span class="meta">${num(row.downloads)} weekly</span></button>`);
+      const maintainers = data.maintainers.map((row) => `
+        <button onclick="showMaintainer('${esc(row.login)}')"><span>${esc(row.login)}</span>
+          <span class="meta">maintainer</span></button>`);
+      $("results").innerHTML = packages.concat(maintainers).join("")
+        || '<p class="empty" style="padding:6px 8px">nothing with that prefix</p>';
+    } catch (error) {
+      $("results").innerHTML = `<p class="empty" style="padding:6px 8px">${esc(error.message)}</p>`;
+    }
+  }, 140);
+});
+
+boot();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-"""Command line entry point: ``wait``, ``selftest``, ``ingest``, ``verify``, ``ask``.
+"""Command line entry point: ``wait``, ``selftest``, ``ingest``, ``verify``, ``serve``, ``ask``.
 
 CI runs the first four in order. ``selftest`` proves every statement against a
 real node on an 11-vertex fixture in seconds, so an unsupported query is caught
@@ -13,9 +13,11 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any, Callable
 
 from . import queries
 from .hydra import HydraClient, HydraError
@@ -213,6 +215,137 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Serve the read-only API and the UI, or prove both against a live node.
+
+    ``--selfcheck`` is the CI half: it binds an ephemeral port, drives every
+    route over real HTTP and asserts the shape of what came back, so a broken
+    route fails the build instead of being discovered in a demo.
+    """
+    from .web import serve as build_server
+
+    with client_from_env() as client:
+        server = build_server(client, host=args.host, port=0 if args.selfcheck else args.port)
+        host, port = server.server_address[0], server.server_address[1]
+        if not args.selfcheck:
+            print(f"blastradius ui on http://{host}:{port}  (ctrl-c to stop)", flush=True)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                print("\nstopped")
+            finally:
+                server.server_close()
+            return 0
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            report = api_selfcheck(f"http://{host}:{port}")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    print(json.dumps(report, indent=2)[:4000])
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    failures = [check for check in report["checks"] if not check["ok"]]
+    print(f"{len(report['checks']) - len(failures)}/{len(report['checks'])} api checks passed")
+    if failures:
+        print(f"{len(failures)} api checks failed: {[c['route'] for c in failures]}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def api_selfcheck(base: str) -> dict:
+    """Drive every route over HTTP and check the answers are answers.
+
+    The assertions are deliberately about content, not status codes: a route
+    returning ``200 {}`` is the failure mode worth catching, and "the UI showed
+    nothing" is exactly what a green build must not hide.
+    """
+    import urllib.error
+
+    def get(path: str) -> tuple[int, Any]:
+        try:
+            with urllib.request.urlopen(f"{base}{path}", timeout=120) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read() or b"{}")
+
+    checks: list[dict] = []
+
+    def check(route: str, predicate: Callable[[int, Any], bool], note: str = "") -> Any:
+        started = time.perf_counter()
+        status, payload = get(route)
+        elapsed = (time.perf_counter() - started) * 1000
+        try:
+            ok = bool(predicate(status, payload))
+            detail = note
+        except Exception as error:  # a malformed payload is a failure, not a crash
+            ok, detail = False, f"{type(error).__name__}: {error}"
+        checks.append({"route": route, "ok": ok, "status": status, "ms": round(elapsed, 1),
+                       "detail": detail or json.dumps(payload)[:160]})
+        return payload
+
+    health = check("/api/health", lambda status, body: status == 200 and body["ok"])
+    listing = check(
+        "/api/services",
+        lambda status, body: status == 200 and len(body["services"]) > 0
+        and all(row["hits"] >= 0 for row in body["services"]),
+    )
+    names = [row["service"] for row in listing.get("services", [])]
+    worst = max(
+        listing.get("services", []), key=lambda row: row.get("malicious") or 0, default={}
+    ).get("service")
+
+    for name in names:
+        check(
+            f"/api/services/{name}",
+            lambda status, body: status == 200
+            and body["counts"]["hits"] > 0
+            and len(body["hits"]) == body["counts"]["hits"]
+            and sum(body["depth_profile"].values()) > 0,
+        )
+
+    if worst:
+        service = check(
+            f"/api/services/{worst}",
+            lambda status, body: status == 200 and body["counts"]["chains"] > 0
+            and len(body["lookalikes"]) > 0,
+            note="worst service has chains and lookalikes",
+        )
+        first_hit = (service.get("hits") or [{}])[0].get("version", "")
+        package_name = "@".join(first_hit.split("@")[:-1]) or first_hit
+        if package_name:
+            check(
+                f"/api/packages/{package_name}",
+                lambda status, body: status == 200 and len(body["versions"]) > 0
+                and len(body["shipped_by"]) > 0,
+                note=f"package view for {package_name}",
+            )
+            maintainers = (
+                check(f"/api/packages/{package_name}", lambda status, body: status == 200)
+                .get("maintainers")
+                or []
+            )
+            if maintainers:
+                login = maintainers[0]["login"]
+                check(
+                    f"/api/maintainers/{login}",
+                    lambda status, body: status == 200 and body["counts"]["packages"] > 0,
+                    note=f"takeover reach for {login}",
+                )
+
+    check("/api/search?q=ex", lambda status, body: status == 200 and len(body["packages"]) > 0)
+    check("/api/lookalikes", lambda status, body: status == 200 and body["count"] > 0)
+    check("/api/nope", lambda status, body: status == 404 and "error" in body)
+    check("/api/packages/definitely-not-a-package",
+          lambda status, body: status == 404 and "error" in body)
+
+    return {"base": base, "graph": health.get("graph", {}), "checks": checks}
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     """Re-derive the ecosystem counts quoted in the README. Needs no database."""
     from .osv import iter_advisories, summarise
@@ -294,6 +427,15 @@ def build_parser() -> argparse.ArgumentParser:
     stats.add_argument("--archive", default=str(DEFAULT_ARCHIVE))
     stats.add_argument("--out", default="artifacts/corpus.json")
     stats.set_defaults(func=cmd_stats)
+
+    serve_cmd = sub.add_parser("serve", help="serve the read-only API and UI")
+    serve_cmd.add_argument("--host", default="127.0.0.1")
+    serve_cmd.add_argument("--port", type=int, default=8080)
+    serve_cmd.add_argument(
+        "--selfcheck", action="store_true", help="drive every route once and exit"
+    )
+    serve_cmd.add_argument("--out", default="artifacts/api.json")
+    serve_cmd.set_defaults(func=cmd_serve)
 
     ask = sub.add_parser("ask", help="show the hits for one service")
     ask.add_argument("service")

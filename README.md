@@ -131,6 +131,35 @@ found before a 219 MB download rather than after it.
 `ingest` downloads the OSV npm archive once (~219 MB) into `data/` and caches
 every registry response under `data/cache/`, so re-runs are cheap and offline.
 
+**4. Open the UI:**
+
+```bash
+blastradius serve                     # http://127.0.0.1:8080
+```
+
+Four views over the same graph, no build step and no extra dependency — the API
+is `http.server`, the page is one HTML file:
+
+- **service** — hits, how deep they sit, choke points, exposure windows, the
+  lookalike names it ships, and every chain. Each hop in a chain is clickable.
+- **package** — "this was just called malicious": which services it reaches and
+  through which chains, who can publish it, what it impersonates.
+- **maintainer** — if this npm account were taken over, what does it touch?
+- **lookalikes** — every `SIMILAR` edge with both download counts, so a
+  detection can be argued with instead of trusted.
+
+Search is a prefix query against the graph (`WHERE name STARTS WITH`), not a
+filter in Python.
+
+```bash
+blastradius serve --selfcheck         # drive every route once, then exit
+```
+
+`--selfcheck` is what CI runs: it binds an ephemeral port, calls every route over
+real HTTP and asserts on content — a service with zero hits, a page with no
+chains or an empty search all fail the build. A route that returns `200 {}` is the
+failure mode worth catching.
+
 ## How HydraDB is used
 
 The point of the project is that the interesting questions are traversals, so
@@ -143,6 +172,10 @@ they are pushed into the database rather than pulled into Python.
   `Adv.osv`), which is what the procedure's vertex-property index supports.
 - **Cypher for the rest.** Direct hits, depth profile, choke points, maintainer
   footprint and exposure windows are aggregations over the same graph.
+- **Search as a query, not a scan.** A pattern can carry an inline non-id
+  property and `WHERE` supports `STARTS WITH` (but not `CONTAINS` or `IN`), so
+  package and maintainer prefix search happen in the database, with `LIMIT` taken
+  as a parameter.
 - **Bulk writes via `UNWIND $rows`.** Ingest sends nested-JSON parameter batches
   over the HTTP query endpoint, upserting with `MERGE` by id then `SET`, vertices
   before edges. Batches are the only multi-row write there is: outside an
@@ -267,8 +300,13 @@ every field present in every row, body-size-bounded chunks — so a violation fa
 in 0.2s locally instead of minutes into a CI run.
 
 CI runs the suite, then starts a real HydraDB node and runs `selftest`, the
-ingest and the traversals against it, publishing `artifacts/selftest.json`,
-`artifacts/ingest.json`, `artifacts/results.json` and the node's own logs.
+ingest, the traversals and the API self-check against it, publishing
+`artifacts/selftest.json`, `artifacts/ingest.json`, `artifacts/results.json`,
+`artifacts/api.json` and the node's own logs.
+
+`tests/unit/test_web.py` covers the API without a database, including a test that
+the CI self-check *fails* on a graph with no hits — a check that cannot fail is
+not a check.
 
 ## Data sources and attribution
 

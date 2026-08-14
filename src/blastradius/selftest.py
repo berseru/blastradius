@@ -360,6 +360,66 @@ def run_selftest(client: HydraClient) -> SelfTestReport:
 
     _run_check(report, "service_lookalikes", "read", lookalikes)
 
+    def ui_lookups() -> str:
+        """The queries the UI adds: prefix search, and matching on a name.
+
+        Three server behaviours are being proved here, not just three queries:
+        that a pattern can carry an inline non-id property, that `WHERE ... STARTS
+        WITH` works on a string property, and that `LIMIT` accepts a parameter.
+        None of that can be checked in the sandbox, so it is checked here before
+        the ingest rather than in front of a judge.
+        """
+        found = client.run(queries.PACKAGE_SEARCH, {"prefix": "selftest-l", "limit": 10}).dicts()
+        names = [row.get("name") for row in found]
+        assert names == ["selftest-lib", "selftest-lib-typo"], f"prefix search gave {names}"
+        assert found[0].get("downloads") == 1_000_000, f"downloads missing: {found[0]}"
+
+        narrowed = client.run(queries.PACKAGE_SEARCH, {"prefix": "selftest-l", "limit": 1}).dicts()
+        assert len(narrowed) == 1, f"LIMIT as a parameter did not apply: {narrowed}"
+
+        logins = [
+            row.get("login")
+            for row in client.run(
+                queries.MAINTAINER_SEARCH, {"prefix": "selftest-m", "limit": 10}
+            ).dicts()
+        ]
+        assert logins == ["selftest-maint"], f"maintainer search gave {logins}"
+
+        versions = [
+            row.get("version")
+            for row in client.run(queries.PACKAGE_VERSIONS, {"name": "selftest-lib"}).dicts()
+        ]
+        assert sorted(versions) == [LIB_KEY, PATCH_KEY], f"versions by name gave {versions}"
+
+        advisories = client.run(queries.PACKAGE_ADVISORIES, {"name": "selftest-lib"}).dicts()
+        assert {row.get("advisory") for row in advisories} == {"SELFTEST-0001"}, advisories
+
+        pinned = client.run(queries.PACKAGE_SERVICES, {"name": "selftest-lib"}).dicts()
+        assert {row.get("service") for row in pinned} == {"selftest-service"}, pinned
+
+        owners = [
+            row.get("login")
+            for row in client.run(queries.PACKAGE_MAINTAINERS, {"name": "selftest-lib"}).dicts()
+        ]
+        assert owners == ["selftest-maint"], f"maintainers by package name gave {owners}"
+
+        reach = client.run(
+            queries.MAINTAINER_REACH_BY_LOGIN, {"login": "selftest-maint"}
+        ).dicts()
+        assert {row.get("service") for row in reach} == {"selftest-service"}, reach
+
+        neighbours = client.run(
+            queries.TYPOSQUAT_NEIGHBOURS_BY_NAME, {"name": "selftest-lib-typo"}
+        ).dicts()
+        assert [row.get("looks_like") for row in neighbours] == ["selftest-lib"], neighbours
+
+        every = client.run(queries.LOOKALIKES_ALL).dicts()
+        pairs = {(row.get("suspect"), row.get("looks_like")) for row in every}
+        assert ("selftest-lib-typo", "selftest-lib") in pairs, pairs
+        return f"{len(names)} packages, {len(pairs)} lookalike pairs, reach {len(reach)} rows"
+
+    _run_check(report, "ui_lookups", "read", ui_lookups)
+
     def chains() -> str:
         found = queries.blast_radius(client, [PATCH_KEY, TYPO_KEY], [APP_KEY], max_len=6)
         assert found, "no chain found from a bad version to the app"
