@@ -1,0 +1,64 @@
+name: ci
+
+# The steps live in ci/*.sh on purpose: the workflow file stays stable while the
+# pipeline it runs can evolve with the code.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      seed_packages:
+        description: "How many seed packages to ingest"
+        default: "250"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: bash ci/unit.sh
+
+  graph:
+    name: integration against HydraDB
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The npm/OSV inputs are immutable per day, so a warm cache keeps the run
+      # honest (same inputs) and fast (no re-download).
+      - name: Restore data cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: npm-data-${{ hashFiles('scripts/seed_packages.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            npm-data-${{ hashFiles('scripts/seed_packages.txt') }}-
+            npm-data-
+
+      - name: Start HydraDB, ingest, run every query
+        env:
+          SEED_PACKAGES: ${{ github.event.inputs.seed_packages || '250' }}
+        run: bash ci/graph.sh
+
+      - name: HydraDB logs
+        if: always()
+        run: bash ci/collect-logs.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: run-artifacts
+          path: artifacts/
