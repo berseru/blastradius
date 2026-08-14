@@ -68,6 +68,7 @@ class IngestStats:
     advisories_kept: int = 0
     affects_edges: int = 0
     similar_edges: int = 0
+    similar_pairs: list[dict] = field(default_factory=list)
     rows_written: int = 0
     fetch_seconds: float = 0.0
     parse_seconds: float = 0.0
@@ -83,6 +84,7 @@ class IngestStats:
             "advisories_kept": self.advisories_kept,
             "affects_edges": self.affects_edges,
             "similar_edges": self.similar_edges,
+            "similar_pairs": self.similar_pairs,
             "rows_written": self.rows_written,
             "fetch_seconds": round(self.fetch_seconds, 2),
             "parse_seconds": round(self.parse_seconds, 2),
@@ -333,6 +335,19 @@ def build_rows(
     for pair in find_typosquats(
         versions_by_package, downloads, always_suspect=malicious_names
     ):
+        # Named, not just counted: a lookalike the run refuses to explain is a
+        # lookalike nobody can check, and a false positive here is expensive.
+        stats.similar_pairs.append(
+            {
+                "suspect": pair.suspect,
+                "target": pair.target,
+                "distance": pair.distance,
+                "downloads_ratio": pair.downloads_ratio,
+                "suspect_downloads": pair.suspect_downloads,
+                "target_downloads": pair.target_downloads,
+                "known_malicious": pair.suspect in malicious_names,
+            }
+        )
         from_id = book.package(pair.suspect)
         to_id = book.package(pair.target)
         rows.add(

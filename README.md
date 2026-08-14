@@ -55,12 +55,22 @@ carry weight in a traversal:
 (Ver)  -[:OF]->                      (Pkg)
 (Maint)-[:MAINTAINS]->               (Pkg)
 (Adv)  -[:AFFECTS {introduced, fixed}]-> (Ver)
-(Pkg)  -[:SIMILAR {distance}]->      (Pkg)
+(Pkg)  -[:SIMILAR {distance, downloads_ratio}]-> (Pkg)
 ```
 
-`SIMILAR` is the typosquat layer: package names one edit apart. It is what lets
-the graph explain *how* malware entered a tree, rather than only that it is
-present.
+`DEPENDS` is built from the lockfile that was submitted, resolved the way npm
+resolves it — nearest enclosing `node_modules` first, then a unique name, then
+the semver range. It is deliberately *not* re-resolved against the registry:
+today's release of a package has today's dependencies, while the lockfile pins
+what shipped. Resolving live gives edges that hang off versions nobody installed,
+which is a graph of a codebase that does not exist.
+
+`SIMILAR` is the typosquat layer: names one edit apart (Damerau-Levenshtein,
+including transpositions), kept only when the popular side clears 10,000 weekly
+downloads and the suspect side is under 1% of it. Both the distance and the
+download ratio ride on the edge, so "impersonation" is a measured claim rather
+than a hunch. It is what lets the graph explain *how* malware entered a tree,
+rather than only that it is present.
 
 ## Quickstart
 
@@ -162,8 +172,8 @@ Four lockfiles under `examples/`, resolved from the real npm registry:
 
 | service | resolved packages | what it demonstrates |
 |---|---|---|
-| `checkout-api` | 248 | an ordinary API a year behind on upgrades |
-| `admin-dashboard` | 484 | a large front-end tree, mostly dev dependencies |
+| `checkout-api` | 249 | an ordinary API a year behind on upgrades |
+| `admin-dashboard` | 488 | a large front-end tree, mostly dev dependencies |
 | `data-worker` | 47 | a small tree with critical database vulnerabilities |
 | `typosquat-incident` | 82 | five real malicious typosquats, none with a fix |
 
@@ -177,6 +187,61 @@ and their `MAL-*` advisories are real OSV records (`expess`, `chalkk`,
 reconstructed, because npm has already removed those releases — as of 2026-08-14
 each of those names resolves to a single `0.0.1-security` placeholder. This is
 stated in `scripts/make_example_lockfiles.py` next to the data itself.
+
+## What a run actually returns
+
+Every number below was read out of `artifacts/results.json` from one CI run
+(2026-08-14), not written by hand. 134 seed packages expand into the graph the
+four example services are measured against:
+
+| | count |
+|---|---|
+| packages / versions | 2,278 / 2,990 |
+| maintainer accounts | 1,036 |
+| advisories kept (of 226,817 scanned) | 130 |
+| `DEPENDS` / `USES` / `MAINTAINS` edges | 6,418 / 861 / 5,280 |
+| `AFFECTS` / `SIMILAR` edges | 180 / 7 |
+
+Per service — pinned versions an advisory names, how many of those are malware,
+how many have no fixed version at all, and how many distinct dependency chains
+lead to them:
+
+| service | hits | malicious | unfixable | chains | worst exposure (days) |
+|---|---|---|---|---|---|
+| `checkout-api` | 61 | 0 | 0 | 16 | 2,926.8 |
+| `admin-dashboard` | 46 | 0 | 1 | 12 | 2,591.8 |
+| `data-worker` | 36 | 0 | 0 | 3 | 2,344.8 |
+| `typosquat-incident` | 20 | 5 | 7 | 8 | 2,170.8 |
+
+The chains are the product, so here are three verbatim:
+
+```
+elliptic@6.6.1 -> browserify-sign@4.2.6 -> crypto-browserify@3.12.1 -> node-libs-browser@2.2.1 -> webpack@4.43.0
+minimist@1.2.0 -> mkdirp@0.5.6 -> tar@4.4.10
+follow-redirects@1.15.11 -> axios@0.21.1
+```
+
+Choke points rank by how many paths run through them, which is why they are
+worth pre-emptive attention: `es-errors@1.3.0` carries 71 paths in
+`checkout-api`, `inherits@2.0.4` 53 in `admin-dashboard` — small packages nobody
+chose, sitting under everything.
+
+Typosquat detection on the same run flagged the five real malicious names and
+nothing else in that service's tree, with the popularity gap it measured:
+
+| suspect | weekly downloads | impersonates | weekly downloads | ratio |
+|---|---|---|---|---|
+| `axioss` | 33 | `axios` | 119,805,667 | 2.8e-07 |
+| `chalkk` | 3 | `chalk` | 490,712,867 | 6.1e-09 |
+| `comander` | 10 | `commander` | 476,596,961 | 2.1e-08 |
+| `expess` | 138 | `express` | 127,296,948 | 1.1e-06 |
+| `fodash` | 5 | `lodash` | 167,905,798 | 3.0e-08 |
+
+Query latency on that graph, per service, worst case across the four: depth
+profile 1,465 ms, choke points 536 ms, lookalikes 208 ms, blast-radius paths
+46 ms, direct hits 90 ms, exposure windows 50 ms. Ingest wrote 22,174 rows in
+1.94 s; the 226,817-advisory dump was parsed in 10.4 s; `selftest` put all
+23 checks against a live node in 0.1 s.
 
 ## Reproducing the numbers
 
@@ -213,6 +278,8 @@ ingest and the traversals against it, publishing `artifacts/selftest.json`,
   publication times, maintainer accounts.
 - **[deps.dev](https://deps.dev)** — resolved dependency graphs used to build the
   example lockfiles.
+- **[npm downloads API](https://api.npmjs.org/downloads/point/last-week)** —
+  weekly download counts, the popularity side of the typosquat signal.
 - **[HydraDB](https://github.com/hydra-db/hydradb)** — the graph database,
   AGPL-3.0, used unmodified as a container image.
 
