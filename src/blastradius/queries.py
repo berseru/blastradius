@@ -12,6 +12,19 @@ source rather than guessed at, because both of them change the schema:
    ``Maint.login``, ``Adv.osv``, ``Svc.name``. Property indexes are written
    automatically on upsert, so no index DDL is needed.
 
+Three more rules were learned the only way they can be - from a server refusing
+a statement - and every one of them is visible in the queries below:
+
+3. An aggregate takes ``*`` or ``<binding>.<property>``, never a binding:
+   ``count(n)`` is answered with "property values support integer, float,
+   boolean, and string literals". Hence ``count(*)`` everywhere.
+4. An anonymous node cannot carry a label or a property, so every node in a
+   pattern that needs either is named, even when nothing projects it.
+5. A parameter holding a list is rejected in any query that is not an ``UNWIND``
+   batch, and the path procedures want their selectors as literal lists anyway,
+   so ``sourceValues``/``targetValues`` are formatted into the query text from
+   keys validated against ``SAFE_KEY``.
+
 ``maxLen`` cannot exceed the server's ``max_traversal_hops`` (16 by default),
 so every traversal below is explicitly bounded well under that.
 
@@ -20,15 +33,18 @@ against an *empty* parameter map (``lower_hop_range`` in ``query/opencypher.rs``
 so ``[:DEPENDS*1..$max_len]`` cannot work. Those bounds are formatted into the
 query text from a range-checked ``int``, never from user input.
 
-None of these have been executed yet: the sandbox cannot run HydraDB, so
-`blastradius.cli verify` is what proves them, in CI, against a real node.
-Until that run is green these are unverified drafts.
+Every statement here is executed against a real node on every push:
+``blastradius selftest`` runs all of them over a synthetic fixture and checks the
+answers, and ``blastradius verify`` runs them again over the real graph. The
+sandbox they were written in cannot run HydraDB, so CI is the only witness that
+counts - which is why the self test exists.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from .hydra import HydraClient, Path, paths_from
 
@@ -52,8 +68,8 @@ RETURN v.key AS version, adv.osv AS advisory, adv.kind AS kind,
 
 BLAST_RADIUS = """
 CALL algo.MSpaths({
-  sourceLabel: 'Ver', sourceProperty: 'key', sourceValues: $bad_keys,
-  targetLabel: 'Ver', targetProperty: 'key', targetValues: $service_keys,
+  sourceLabel: 'Ver', sourceProperty: 'key', sourceValues: %s,
+  targetLabel: 'Ver', targetProperty: 'key', targetValues: %s,
   relTypes: ['DEPENDS'], relDirection: 'incoming',
   maxLen: $max_len, pathCount: $path_count, resultLimit: $result_limit
 }) YIELD path RETURN path
@@ -65,8 +81,8 @@ CALL algo.MSpaths({
 # --------------------------------------------------------------------------
 
 DEPTH_AT = """
-MATCH (s:Svc {id: $service_id})-[:USES]->(:Ver)-[:DEPENDS*%d..%d]->(dep:Ver)<-[:AFFECTS]-(adv:Adv)
-RETURN count(adv) AS hits
+MATCH (s:Svc {id: $service_id})-[:USES]->(entry:Ver)-[:DEPENDS*%d..%d]->(dep:Ver)<-[:AFFECTS]-(adv:Adv)
+RETURN count(*) AS hits
 """
 
 # --------------------------------------------------------------------------
@@ -78,12 +94,12 @@ RETURN count(adv) AS hits
 MAINTAINER_REACH = """
 MATCH (m:Maint {id: $maintainer_id})-[:MAINTAINS]->(p:Pkg)<-[:OF]-(v:Ver)<-[u:USES]-(s:Svc)
 RETURN s.name AS service, p.name AS package, v.key AS version,
-       u.direct AS direct, count(v) AS versions
+       u.direct AS direct, count(*) AS versions
 """
 
 MAINTAINER_FOOTPRINT = """
 MATCH (m:Maint {id: $maintainer_id})-[:MAINTAINS]->(p:Pkg)
-RETURN count(p) AS packages, sum(p.version_count) AS versions
+RETURN count(*) AS packages, sum(p.version_count) AS versions
 """
 
 # --------------------------------------------------------------------------
@@ -106,7 +122,7 @@ RETURN v.key AS version, adv.osv AS advisory, adv.kind AS kind,
 
 CHOKE_POINTS = """
 MATCH (s:Svc {id: $service_id})-[:USES]->(entry:Ver)-[:DEPENDS*1..%d]->(mid:Ver)
-RETURN mid.key AS version, count(entry) AS reached_through
+RETURN mid.key AS version, count(*) AS reached_through
 """
 
 SERVICE_ENTRY_POINTS = """
@@ -122,13 +138,29 @@ RETURN other.name AS candidate, r.distance AS distance,
 
 MAX_TRAVERSAL_HOPS = 16  # server default for max_traversal_hops
 
-COUNT_BY_LABEL = "MATCH (n:%s) RETURN count(n) AS total"
-COUNT_BY_EDGE = "MATCH ()-[r:%s]->() RETURN count(r) AS total"
+COUNT_BY_LABEL = "MATCH (n:%s) RETURN count(*) AS total"
+COUNT_BY_EDGE = "MATCH (a)-[r:%s]->(b) RETURN count(*) AS total"
 
 
 # --------------------------------------------------------------------------
 # Python side
 # --------------------------------------------------------------------------
+
+
+# A parameter holding a list is rejected outright - "composite parameter $x is
+# only supported as an UNWIND input" - and the path procedures read
+# sourceValues/targetValues as *literal* lists of strings (``config_string_list``
+# in ``query/path_procedure.rs``). So these selectors are formatted into the
+# query text, and anything that is not an npm-shaped key is refused rather than
+# escaped: no quote can reach the parser.
+SAFE_KEY = re.compile(r"^[A-Za-z0-9@/._~+-]+$")
+
+
+def key_list_literal(values: Sequence[str]) -> tuple[str, list[str]]:
+    """Render ``['a@1.0.0', 'b@2.0.0']`` from safe keys, plus what was refused."""
+    safe = [value for value in values if SAFE_KEY.match(value or "")]
+    refused = [value for value in values if value not in set(safe)]
+    return "[" + ", ".join(f"'{value}'" for value in safe) + "]", refused
 
 
 def known_time(value: object) -> int | None:
@@ -228,12 +260,18 @@ def blast_radius(
     """Enumerate the chains that drag ``bad_keys`` into ``service_keys``."""
     if not bad_keys or not service_keys:
         return []
+    sources, refused_sources = key_list_literal(bad_keys)
+    targets, refused_targets = key_list_literal(service_keys)
+    refused = refused_sources + refused_targets
+    if refused:
+        print(f"  blast_radius: refused {len(refused)} unsafe keys, e.g. {refused[:3]}",
+              flush=True)
+    if sources == "[]" or targets == "[]":
+        return []
     result = client.run(
-        BLAST_RADIUS,
+        BLAST_RADIUS % (sources, targets),
         {
-            "bad_keys": bad_keys,
-            "service_keys": service_keys,
-            "max_len": max_len,
+            "max_len": _hop_bound(max_len),
             "path_count": path_count,
             "result_limit": result_limit,
         },

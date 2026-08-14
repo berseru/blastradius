@@ -20,7 +20,7 @@ import re
 
 import pytest
 
-from blastradius import model, pipeline, selftest
+from blastradius import model, pipeline, queries, selftest
 from blastradius.hydra import MAX_BODY_BYTES, HEALTHCHECK_WRITE, _chunks, check_row
 from blastradius.queries import known_time
 
@@ -183,3 +183,48 @@ def _built_rows(*, undated: bool = False):
         [Lockfile(service="checkout-api", lockfile_version=3, pins=pins)],
         captured_at=1_760_000_000,
     )
+
+
+class TestReadQueryShape:
+    """The rules the read path rejected on the first live run."""
+
+    READS = (
+        "DIRECT_HITS", "BLAST_RADIUS", "DEPTH_AT", "MAINTAINER_REACH",
+        "MAINTAINER_FOOTPRINT", "EXPOSURE_WINDOW", "CHOKE_POINTS",
+        "SERVICE_ENTRY_POINTS", "TYPOSQUAT_NEIGHBOURS", "COUNT_BY_LABEL",
+        "COUNT_BY_EDGE",
+    )
+
+    @pytest.mark.parametrize("name", READS)
+    def test_no_aggregate_takes_a_bare_binding(self, name):
+        # count(n) is refused; only count(*) or count(n.property) are legal.
+        statement = getattr(queries, name)
+        for call in re.findall(r"\b(?:count|sum|avg|collect)\(([^)]*)\)", statement):
+            assert call == "*" or "." in call, f"{name} aggregates over {call!r}"
+
+    @pytest.mark.parametrize("name", READS)
+    def test_no_anonymous_node_carries_a_label(self, name):
+        # "node labels and non-id properties require a named node"
+        statement = getattr(queries, name)
+        assert "(:" not in statement, f"{name} has an unnamed labelled node"
+
+    @pytest.mark.parametrize("name", READS)
+    def test_no_list_is_passed_as_a_parameter(self, name):
+        # A list parameter is only legal as UNWIND input, so the path procedure
+        # selectors are formatted in as literals.
+        statement = getattr(queries, name)
+        assert "$bad_keys" not in statement and "$service_keys" not in statement
+
+    def test_selectors_are_rendered_as_a_literal_list(self):
+        literal, refused = queries.key_list_literal(["express@4.18.2", "@babel/core@8.0.1"])
+        assert literal == "['express@4.18.2', '@babel/core@8.0.1']"
+        assert refused == []
+
+    def test_a_key_that_could_break_out_of_the_literal_is_refused(self):
+        literal, refused = queries.key_list_literal(["ok@1.0.0", "evil'] })-- @1"])
+        assert literal == "['ok@1.0.0']"
+        assert refused == ["evil'] })-- @1"]
+
+    def test_hop_bounds_are_still_literals_in_range(self):
+        with pytest.raises(ValueError, match="hop bound"):
+            queries.depth_profile(None, 1, max_len=99)
