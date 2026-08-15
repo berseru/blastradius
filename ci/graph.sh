@@ -54,3 +54,14 @@ python -m blastradius.cli serve --selfcheck --out artifacts/api.json \
 # before this line agrees with our own parser by construction.
 python -m blastradius.cli crosscheck --samples artifacts/api-samples \
   --out artifacts/osv-crosscheck.json
+
+# Every command the README tells a reader to run is run here, including the two
+# that only print for humans: a documented command that nothing executes is a
+# documented command that quietly rots.
+python -m blastradius.cli ask typosquat-incident
+python -m blastradius.cli stats --out artifacts/corpus.json
+# ...and asking for a service that does not exist must fail, not print nothing.
+if python -m blastradius.cli ask no-such-service; then
+  echo "ask accepted an unknown service" >&2
+  exit 1
+fi

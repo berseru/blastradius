@@ -117,9 +117,12 @@ export HYDRA_TOKEN=dev-token
 ```bash
 blastradius wait                      # block until a query round-trips
 blastradius selftest                  # every statement, on 11 synthetic vertices
+blastradius contract                  # the failure paths: 401, wrong graph, writes that landed
 blastradius ingest --seeds 40         # registry + OSV -> graph
 blastradius verify --out artifacts/results.json
+blastradius crosscheck                # sampled answers vs the live OSV API
 blastradius ask typosquat-incident
+blastradius stats                     # ecosystem counts, no database needed
 ```
 
 `selftest` takes a couple of seconds and is worth running first: it writes a
@@ -326,6 +329,10 @@ building. `tests/unit/test_statements.py` additionally holds every statement to
 the rules the database enforces — batch form, `MERGE` on `id` alone, no nulls,
 every field present in every row, body-size-bounded chunks — so a violation fails
 in 0.2s locally instead of minutes into a CI run.
+
+Every command shown in this README is executed by CI, including the two that
+only print for humans (`ask`, `stats`) — a documented command that nothing runs
+is a documented command that quietly rots.
 
 CI runs the suite, then starts a real HydraDB node and runs `selftest`,
 `contract`, the ingest, the traversals and the API self-check against it,

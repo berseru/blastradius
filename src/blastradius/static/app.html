@@ -44,6 +44,9 @@
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
     color: var(--muted); margin: 0 0 10px;
   }
+  /* A scrollable box hides its own length: on a screenshot or a projector the
+     reader sees ten rows and has no way to know there are sixty-one. */
+  h2 .count { color: var(--muted); opacity: 0.75; letter-spacing: 0; text-transform: none; }
   .search { position: relative; margin-bottom: 20px; }
   .search input {
     width: 100%; padding: 9px 11px; border-radius: 8px; color: var(--text);
@@ -142,6 +145,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const num = (value) => (value === null || value === undefined || value < 0 ? "?" : Number(value).toLocaleString("en-US"));
+const countLabel = (n, noun) =>
+  n > 8 ? ` <span class="count">— ${num(n)} ${noun}${n === 1 ? "" : "s"}, scroll for all of them</span>` : "";
 const day = (seconds) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "unknown");
 
 async function api(path) {
@@ -221,7 +226,7 @@ async function showService(name) {
         <div class="block"><h2>Choke points — most paths run through these</h2>${data.choke_points.length ? bars(data.choke_points.map((row) => ({ version: row.version, reached_through: row.reached_through })), "version", "reached_through") : '<p class="empty">no transitive paths</p>'}</div>
       </div>
       <div class="grid2" style="margin-top:22px">
-        <div class="block"><h2>Chains: from the bad version to what you ship</h2>
+        <div class="block"><h2>Chains: from the bad version to what you ship${countLabel(data.chains.length, "chain")}</h2>
           <div class="scroll">${data.chains.length ? data.chains.map(chainHtml).join("") : '<p class="empty">every hit is a direct pin</p>'}</div></div>
         <div class="block"><h2>Names impersonating a popular package</h2>
           ${data.lookalikes.length ? data.lookalikes.map((row) => `
@@ -233,7 +238,7 @@ async function showService(name) {
             </div>`).join("") : '<p class="empty">no lookalike names in this tree</p>'}
         </div>
       </div>
-      <div class="block" style="margin-top:22px"><h2>Every hit, and whether there is anywhere to upgrade to</h2>
+      <div class="block" style="margin-top:22px"><h2>Every hit, and whether there is anywhere to upgrade to${countLabel(data.hits.length, "row")}</h2>
         <div class="scroll"><table><thead><tr>
           <th>version</th><th>advisory</th><th>kind</th><th>severity</th><th>fix</th><th>disclosed</th><th>pin</th>
         </tr></thead><tbody>
