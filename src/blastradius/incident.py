@@ -334,6 +334,11 @@ def resolved_while_live(
                 entry["verdict"] = "no: the snapshot predates the affected release"
             elif closed is not None and captured >= closed:
                 entry["verdict"] = "no: a fixed version was already available"
+            elif advisory.get("has_fix") and closed is None:
+                # A fix exists but its release is not a node in this graph, so
+                # the live window has no closing edge. Reporting "yes" here
+                # would be an answer the graph cannot stand behind.
+                entry["verdict"] = "unknown: fixed version not in graph"
             else:
                 days = round((captured - opened) / DAY, 1)
                 blind = (
