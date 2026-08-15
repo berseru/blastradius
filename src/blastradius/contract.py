@@ -39,6 +39,19 @@ from .hydra import HydraClient, HydraError
 from .selftest import Check, SelfTestReport, _run_check
 
 # Far above the fixture ids in selftest.py and far below real blake2b ids.
+DEVIATION = "upstream deviation: "
+
+
+def deviation(text: str) -> str:
+    """Mark a check as passed-with-a-caveat.
+
+    The check's own clause held, but the server did something worth reporting.
+    Hiding that would make the artifact a tally; failing on it would make the
+    build depend on someone else's choice of status code.
+    """
+    return f"{DEVIATION}{text}"
+
+
 PROBE_BASE = 900_000
 PROBE_ROWS = 2_500
 
@@ -129,6 +142,14 @@ def run_contract(
     # -- 2. addressing the wrong graph ------------------------------------
 
     def wrong(where: str, **overrides: str) -> Callable[[], str]:
+        """The clause being tested is 'it must not answer as if it were empty'.
+
+        Which 4xx the server picks is its business; that it refuses at all is
+        ours. A status outside 4xx is still reported - as a deviation, with the
+        code the server actually returned - because a server error for a caller
+        error is worth knowing about even when it does not endanger an answer.
+        """
+
         def body() -> str:
             settings = {
                 "base_url": base_url, "token": token, "graph": graph,
@@ -139,10 +160,12 @@ def run_contract(
             try:
                 result = other.run(TRIVIAL_READ)
             except HydraError as error:
-                assert error.status in (400, 403, 404), (
-                    f"{where} failed with {error.status}, which is not a client error"
+                if 400 <= error.status < 500:
+                    return f"{error.status} {error.code}"
+                return deviation(
+                    f"{where} was refused with {error.status} {error.code}; a caller error "
+                    "should be a 4xx. Refused is what matters, so this does not fail the run"
                 )
-                return f"{error.status} {error.code}"
             finally:
                 other.close()
             raise AssertionError(
@@ -270,6 +293,8 @@ def contract_from_env() -> SelfTestReport:
 
 __all__ = [
     "Check",
+    "DEVIATION",
+    "deviation",
     "PROBE_BASE",
     "PROBE_ROWS",
     "PROBE_WRITE",

@@ -96,16 +96,58 @@ def cmd_contract(args: argparse.Namespace) -> int:
     """Prove the failure paths: refused tokens, wrong graphs, writes that landed."""
     from .contract import contract_from_env, write_report
 
+    from .contract import DEVIATION
+
     report = contract_from_env()
     print(report.render(), flush=True)
     if args.out:
         write_report(report, args.out)
+    deviations = [check for check in report.checks if check.detail.startswith(DEVIATION)]
+    for check in deviations:
+        # Printed, not buried in the artifact: this is a finding about the
+        # server, and a finding nobody reads is not a finding.
+        print(f"note: {check.name}: {check.detail}", flush=True)
     if report.failures:
         print(
             f"{len(report.failures)} contract checks failed: "
             f"{[check.name for check in report.failures]}",
             file=sys.stderr,
         )
+        return 1
+    return 0
+
+
+def cmd_crosscheck(args: argparse.Namespace) -> int:
+    """Compare a sample of the run's answers against the live OSV API.
+
+    Everything upstream of this command reads one snapshot through one parser,
+    so a parsing mistake would be invisible: every test would agree with the
+    code that made it. This asks a different source, per advisory, over the
+    network, with a semver implementation written separately from the one the
+    pipeline uses.
+    """
+    from .crosscheck import crosscheck
+
+    report = crosscheck(
+        Path(args.samples), Path(args.out) if args.out else None
+    )
+    for comparison in report["comparisons"]:
+        mark = "ok  " if comparison["agrees"] else "FAIL"
+        if comparison["unreachable"]:
+            mark = "skip"
+        detail = "; ".join(comparison["differences"]) or comparison["grounds"]
+        print(f"  {mark} {comparison['version']:<30} {comparison['advisory']:<24} {detail[:80]}")
+    print(
+        f"{report['agreed']}/{report['checked']} sampled hits agree with {report['source']} "
+        f"on affectedness, disclosure date, severity, fix availability and kind"
+        + (f" ({report['unreachable']} unreachable)" if report["unreachable"] else "")
+    )
+    if report["checked"] == 0:
+        print("no samples found to check", file=sys.stderr)
+        return 1
+    disagreements = [c for c in report["comparisons"] if not c["agrees"]]
+    if disagreements:
+        print(f"{len(disagreements)} disagreements with OSV", file=sys.stderr)
         return 1
     return 0
 
@@ -478,6 +520,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     contract.add_argument("--out", default="artifacts/contract.json")
     contract.set_defaults(func=cmd_contract)
+
+    crosscheck_cmd = sub.add_parser(
+        "crosscheck",
+        help="verify sampled hits against the live OSV API, with an independent "
+             "semver implementation",
+    )
+    crosscheck_cmd.add_argument("--samples", default="artifacts/api-samples")
+    crosscheck_cmd.add_argument("--out", default="artifacts/osv-crosscheck.json")
+    crosscheck_cmd.set_defaults(func=cmd_crosscheck)
 
     ingest = sub.add_parser("ingest", help="build the graph from public data")
     ingest.add_argument("--seeds", type=int, default=None, help="how many seed packages")

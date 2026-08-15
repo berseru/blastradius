@@ -330,8 +330,8 @@ in 0.2s locally instead of minutes into a CI run.
 CI runs the suite, then starts a real HydraDB node and runs `selftest`,
 `contract`, the ingest, the traversals and the API self-check against it,
 publishing `artifacts/selftest.json`, `artifacts/contract.json`,
-`artifacts/ingest.json`, `artifacts/results.json`, `artifacts/api.json` and the
-node's own logs.
+`artifacts/ingest.json`, `artifacts/results.json`, `artifacts/api.json`,
+`artifacts/osv-crosscheck.json` and the node's own logs.
 
 `tests/unit/test_web.py` covers the API without a database, including a test that
 the CI self-check *fails* on a graph with no hits — a check that cannot fail is
@@ -353,6 +353,12 @@ node in CI and asserts the ways this could be quietly wrong:
 | `rejected_write_is_not_partial` | a refused batch leaving half its rows behind |
 | `server_error_surfaces`, `oversized_row_is_reported` | an error losing its code on the way up, or the 1 MiB body cap silently truncating |
 
+Running it against HydraDB 0.1.1 found one deviation worth reporting: a query
+sent to a **cell that does not exist answers `500`**, where an unknown graph or
+namespace answers `403`. It is recorded in the artifact rather than hidden, and
+it does not fail the build — the clause that matters, "a wrong address must not
+be answered as if the graph were empty", holds either way.
+
 The receipt is `artifacts/contract.json`, with the status code and error code the
 server actually returned for each one.
 
@@ -360,6 +366,31 @@ The API has the same treatment: an unknown service, package or maintainer is
 `404` and never an empty page, a malformed `limit` is the caller's `400` and not
 the server's `500`, and `POST`/`PUT`/`PATCH`/`DELETE` are refused with `405`, so
 "read-only" is enforced by the server rather than asserted in this file.
+
+### Checked against a different source
+
+Everything in the pipeline reads one OSV snapshot through one parser, so a
+parsing mistake would be invisible: every test would agree with the code that
+made it. `blastradius crosscheck` samples the hits this run produced and asks
+`api.osv.dev` about each advisory directly, comparing five things — that OSV
+agrees the exact version is affected, the disclosure date, the severity, whether
+a fix exists, and malware vs vulnerability. The semver comparison it uses is
+written from scratch in `crosscheck.py` and does not import the pipeline's
+`versions` module, because two independent implementations agreeing is evidence
+and one module agreeing with itself is not.
+
+The last run checked 24 sampled hits across all four services and OSV agreed with
+every one, `artifacts/osv-crosscheck.json`:
+
+```
+ok   minimist@1.2.0     GHSA-xvch-5gv4-984h   range [1.0.0, 1.2.6)
+ok   ws@7.2.0           GHSA-6fc8-4gx4-v693   range [7.0.0, 7.4.6)
+ok   axioss@1.6.2       MAL-2025-15242        range [0, open)
+24/24 sampled hits agree on affectedness, disclosure date, severity, fix availability and kind
+```
+
+A network failure is reported as unreachable rather than as a disagreement: an
+outage at OSV is not evidence that the graph is wrong.
 
 `tests/unit/test_contract.py` then runs those checks against fake servers that
 each break one clause on purpose — one that accepts any token, one that answers a

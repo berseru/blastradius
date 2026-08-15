@@ -48,3 +48,9 @@ python -m blastradius.cli verify --out artifacts/results.json
 # would render empty fails the build instead of surviving until a demo.
 python -m blastradius.cli serve --selfcheck --out artifacts/api.json \
   --dump-dir artifacts/api-samples
+# Last, and pointed at a different source than everything above it: a sample of
+# the answers this run produced is compared against the live OSV API, with a
+# semver implementation written separately from the pipeline's. Everything
+# before this line agrees with our own parser by construction.
+python -m blastradius.cli crosscheck --samples artifacts/api-samples \
+  --out artifacts/osv-crosscheck.json

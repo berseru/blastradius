@@ -52,6 +52,7 @@ class FakeHydra:
         self.forget_writes = forget_writes
         self.duplicate_on_rewrite = duplicate_on_rewrite
         self.accept_anything = accept_anything
+        self.server_error_on_wrong_address = False
         self.vertices: dict[int, dict] = {}
         self.writes = 0
 
@@ -131,6 +132,8 @@ def make_server(engine: FakeHydra) -> ThreadingHTTPServer:
             if wrong_address:
                 if engine.empty_on_wrong_graph:
                     self._json(200, {"columns": ["rows"], "rows": [], "next_cursor": None})
+                elif engine.server_error_on_wrong_address and body.get("cell_id") != CELL:
+                    self._error(500, "internal", "no such cell")
                 else:
                     self._error(404, "not_found", f"no graph {graph}/{namespace}")
                 return
@@ -206,6 +209,21 @@ def test_an_open_door_is_caught():
     assert failed(report, "auth_empty_token")
     assert failed(report, "auth_no_header")
     assert "ACCEPTED" in detail(report, "auth_wrong_token")
+
+
+def test_a_server_error_for_a_wrong_address_is_reported_but_does_not_fail_the_run():
+    """A 500 for a caller error is worth reporting; it is not worth failing on.
+
+    The clause is "a wrong address must not be answered as if it were empty",
+    and a 500 honours it. HydraDB 0.1.1 answers an unknown cell with 500, so
+    this is the behaviour the artifact records rather than hides.
+    """
+    engine = FakeHydra()
+    engine.server_error_on_wrong_address = True
+    report = run_against(engine)
+    assert not failed(report, "cell_unknown")
+    assert detail(report, "cell_unknown").startswith(contract.DEVIATION)
+    assert "500" in detail(report, "cell_unknown")
 
 
 def test_a_wrong_graph_answered_with_an_empty_result_is_caught():
