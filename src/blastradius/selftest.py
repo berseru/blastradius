@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import model, queries
+from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN
 from .hydra import HydraClient, HydraError, check_row
 
 # Real ids are 62-bit blake2b digests, so these single digits cannot collide
@@ -304,14 +305,14 @@ def run_selftest(client: HydraClient) -> SelfTestReport:
     _run_check(report, "entry_points", "read", entries)
 
     def depths() -> str:
-        profile = queries.depth_profile(client, SVC, max_len=4)
+        profile = queries.depth_profile(client, SVC, max_len=DEPTH_MAX_LEN)
         assert sum(profile.values()) >= 3, f"expected hits at several depths, got {profile}"
         return str(profile)
 
     _run_check(report, "depth_profile", "read", depths)
 
     def chokes() -> str:
-        points = queries.choke_points(client, SVC, max_len=4, top=5)
+        points = queries.choke_points(client, SVC, max_len=DEPTH_MAX_LEN, top=5)
         keys = [point.get("version") for point in points]
         assert PATCH_KEY in keys, f"expected {PATCH_KEY} to be a choke point, got {keys}"
         return str(keys)
@@ -450,7 +451,7 @@ def run_selftest(client: HydraClient) -> SelfTestReport:
     _run_check(report, "incident_view", "read", incident_view)
 
     def chains() -> str:
-        found = queries.blast_radius(client, [PATCH_KEY, TYPO_KEY], [APP_KEY], max_len=6)
+        found = queries.blast_radius(client, [PATCH_KEY, TYPO_KEY], [APP_KEY], max_len=CHAIN_MAX_LEN)
         assert found, "no chain found from a bad version to the app"
         rendered = [chain.render() for chain in found]
         assert any(chain.hops >= 2 for chain in found), f"chains were all one hop: {rendered}"

@@ -34,10 +34,15 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import queries
 from .hydra import HydraClient, HydraError
+from .limits import (
+    CHAIN_MAX_LEN,
+    DEPTH_MAX_LEN,
+    ENDPOINT_SAMPLE,
+    GRAPH_TARGET_SAMPLE,
+    capped,
+)
 
 STATIC = Path(__file__).parent / "static"
-CHAIN_MAX_LEN = 6
-DEPTH_MAX_LEN = 4
 SEARCH_LIMIT = 25
 
 
@@ -135,8 +140,11 @@ class Api:
 
             # A path needs two distinct endpoints, so the bad versions are the
             # sources and the service's own direct pins are the targets.
-            bad_keys = sorted({hit.version for hit in hits})[:25]
-            entry_keys = queries.entry_points(self.client, service_id)[:25]
+            bad_keys, bad_cut = capped(sorted({hit.version for hit in hits}), ENDPOINT_SAMPLE)
+            entry_keys, entry_cut = capped(
+                queries.entry_points(self.client, service_id), ENDPOINT_SAMPLE
+            )
+            truncated = bad_cut or entry_cut
             started = time.perf_counter()
             chains = queries.blast_radius(self.client, bad_keys, entry_keys, max_len=CHAIN_MAX_LEN)
             timings["blast_radius"] = (time.perf_counter() - started) * 1000
@@ -167,6 +175,12 @@ class Api:
             "exposure": [row for row in windows if row.get("exposed_days")][:10],
             "lookalikes": lookalikes,
             "chains": [{"keys": chain.keys, "hops": chain.hops} for chain in chains[:40]],
+            "chain_inputs": {
+                "truncated": truncated,
+                "sample_limit": ENDPOINT_SAMPLE,
+                "sources": len(bad_keys),
+                "targets": len(entry_keys),
+            },
             "timings_ms": {key: round(value, 1) for key, value in timings.items()},
         }
 
@@ -199,15 +213,18 @@ class Api:
         # The headline question: this package was just called malicious - which
         # service does it reach, and through which chain? Sources are its own
         # versions, targets are the direct pins of every service in the graph.
-        keys = sorted({row["version"] for row in versions if row.get("version")})[:25]
+        keys, keys_cut = capped(
+            sorted({row["version"] for row in versions if row.get("version")}), ENDPOINT_SAMPLE
+        )
         targets: list[str] = []
         for row in self.run(queries.SERVICE_LIST):
             with self.lock:
                 targets.extend(queries.entry_points(self.client, int(row["id"])))
         with self.lock:
             started = time.perf_counter()
+            target_keys, targets_cut = capped(sorted(set(targets)), GRAPH_TARGET_SAMPLE)
             found = queries.blast_radius(
-                self.client, keys, sorted(set(targets))[:60], max_len=CHAIN_MAX_LEN
+                self.client, keys, target_keys, max_len=CHAIN_MAX_LEN
             )
             elapsed = (time.perf_counter() - started) * 1000
         return {
@@ -219,6 +236,12 @@ class Api:
             "lookalikes": lookalikes,
             "chains": [{"keys": chain.keys, "hops": chain.hops} for chain in found[:40]],
             "chain_count": len(found),
+            "chain_inputs": {
+                "truncated": keys_cut or targets_cut,
+                "sample_limit": GRAPH_TARGET_SAMPLE,
+                "sources": len(keys),
+                "targets": len(target_keys),
+            },
             "timings_ms": {"blast_radius": round(elapsed, 1)},
         }
 

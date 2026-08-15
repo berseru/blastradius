@@ -25,6 +25,7 @@ import httpx
 
 from . import queries
 from .hydra import MIN_TOKEN_CHARS, HydraClient, HydraError
+from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN, ENDPOINT_SAMPLE, capped
 from .lockfile import Lockfile, load_lockfile
 from .pipeline import ingest as run_ingest
 from .queries import ServiceReport
@@ -193,7 +194,7 @@ def cmd_crosscheck(args: argparse.Namespace) -> int:
         detail = "; ".join(comparison["differences"]) or comparison["grounds"]
         print(f"  {mark} {comparison['version']:<30} {comparison['advisory']:<24} {detail[:80]}")
     print(
-        f"{report['agreed']}/{report['checked']} sampled hits agree with {report['source']} "
+        f"{report['agreed']}/{report['compared']} compared hits agree with {report['source']} "
         f"on affectedness, disclosure date, severity, fix availability and kind"
         + (f" ({report['unreachable']} unreachable)" if report["unreachable"] else "")
     )
@@ -205,7 +206,9 @@ def cmd_crosscheck(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    disagreements = [c for c in report["comparisons"] if not c["agrees"]]
+    disagreements = [
+        c for c in report["comparisons"] if not c["agrees"] and not c["unreachable"]
+    ]
     if disagreements:
         print(f"{len(disagreements)} disagreements with OSV", file=sys.stderr)
         return 1
@@ -265,11 +268,15 @@ def verify(client: HydraClient) -> dict:
             service.timings_ms["direct_hits"] = (time.perf_counter() - started) * 1000
 
             started = time.perf_counter()
-            service.depth_profile = queries.depth_profile(client, service_id, max_len=4)
+            service.depth_profile = queries.depth_profile(
+                client, service_id, max_len=DEPTH_MAX_LEN
+            )
             service.timings_ms["depth_profile"] = (time.perf_counter() - started) * 1000
 
             started = time.perf_counter()
-            service.choke_points = queries.choke_points(client, service_id, max_len=4, top=10)
+            service.choke_points = queries.choke_points(
+                client, service_id, max_len=DEPTH_MAX_LEN, top=10
+            )
             service.timings_ms["choke_points"] = (time.perf_counter() - started) * 1000
 
             started = time.perf_counter()
@@ -283,10 +290,17 @@ def verify(client: HydraClient) -> dict:
             # Sources are the versions an advisory names; targets are the
             # service's own direct dependencies. Pointing both ends at the same
             # set would return nothing, since a path needs two distinct nodes.
-            bad_keys = sorted({hit.version for hit in service.hits})[:25]
-            entry_keys = queries.entry_points(client, service_id)[:25]
+            bad_keys, bad_cut = capped(
+                sorted({hit.version for hit in service.hits}), ENDPOINT_SAMPLE
+            )
+            entry_keys, entry_cut = capped(
+                queries.entry_points(client, service_id), ENDPOINT_SAMPLE
+            )
+            chain_inputs_truncated = bad_cut or entry_cut
             started = time.perf_counter()
-            service.chains = queries.blast_radius(client, bad_keys, entry_keys, max_len=6)
+            service.chains = queries.blast_radius(
+                client, bad_keys, entry_keys, max_len=CHAIN_MAX_LEN
+            )
             service.timings_ms["blast_radius"] = (time.perf_counter() - started) * 1000
         except HydraError as error:
             report["failures"].append(
@@ -305,6 +319,12 @@ def verify(client: HydraClient) -> dict:
                 "worst_exposure_days": windows[0]["exposed_days"] if windows else None,
                 "chains": [chain.render() for chain in service.chains[:5]],
                 "chain_count": len(service.chains),
+                "chain_inputs": {
+                    "truncated": chain_inputs_truncated,
+                    "sample_limit": ENDPOINT_SAMPLE,
+                    "sources": len(bad_keys),
+                    "targets": len(entry_keys),
+                },
                 "lookalikes": lookalikes[:5],
                 "timings_ms": {key: round(value, 1) for key, value in service.timings_ms.items()},
             }

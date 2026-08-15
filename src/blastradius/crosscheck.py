@@ -193,12 +193,16 @@ def sample_hits(directory: Path, per_service: int = 7) -> list[dict]:
 def crosscheck(samples: Path, out: Path | None = None) -> dict:
     hits = sample_hits(samples)
     comparisons = [compare_hit(hit) for hit in hits]
-    disagreements = [c for c in comparisons if not c.agrees]
+    # A hit OSV could not be fetched for was never compared, so it can neither
+    # agree nor disagree: counting it as agreement inflates the headline.
     unreachable = [c for c in comparisons if c.unreachable]
+    compared = [c for c in comparisons if not c.unreachable]
+    disagreements = [c for c in compared if not c.agrees]
     report = {
         "source": OSV_API,
         "checked": len(comparisons),
-        "agreed": len(comparisons) - len(disagreements),
+        "compared": len(compared),
+        "agreed": len(compared) - len(disagreements),
         "unreachable": len(unreachable),
         "comparisons": [c.as_dict() for c in comparisons],
     }

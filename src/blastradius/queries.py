@@ -46,6 +46,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN
 from .hydra import HydraClient, Path, paths_from
 
 # --------------------------------------------------------------------------
@@ -379,7 +380,7 @@ def blast_radius(
     bad_keys: list[str],
     service_keys: list[str],
     *,
-    max_len: int = 8,
+    max_len: int = CHAIN_MAX_LEN,
     path_count: int = 3,
     result_limit: int = 500,
 ) -> list[Chain]:
@@ -450,7 +451,7 @@ def _hop_bound(value: int) -> int:
     return bound
 
 
-def depth_profile(client: HydraClient, service_id: int, *, max_len: int = 6) -> dict[int, int]:
+def depth_profile(client: HydraClient, service_id: int, *, max_len: int = DEPTH_MAX_LEN) -> dict[int, int]:
     """How many advisory hits sit at each depth: 1 hop out, 2 hops out, ...
 
     Asked one depth at a time because the hop range has to be a literal, which
@@ -464,7 +465,7 @@ def depth_profile(client: HydraClient, service_id: int, *, max_len: int = 6) -> 
 
 
 def choke_points(
-    client: HydraClient, service_id: int, *, max_len: int = 6, top: int = 15
+    client: HydraClient, service_id: int, *, max_len: int = DEPTH_MAX_LEN, top: int = 15
 ) -> list[dict[str, Any]]:
     rows = client.run(CHOKE_POINTS % _hop_bound(max_len), {"service_id": service_id}).dicts()
     return sorted(rows, key=lambda row: -(row.get("reached_through") or 0))[:top]
