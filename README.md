@@ -82,7 +82,7 @@ Requires Docker and Python 3.11+.
 
 ```bash
 mkdir -p /tmp/hydra/store /tmp/hydra/cache
-printf 'dev-token' > /tmp/hydra/token
+printf 'local-development-token-32-bytes' > /tmp/hydra/token   # 32 characters, see below
 
 docker run -d --name hydradb \
   --user "$(id -u):$(id -g)" \
@@ -101,6 +101,13 @@ docker run -d --name hydradb \
   ghcr.io/hydra-db/hydradb:0.1.1
 ```
 
+The token is not decoration and its length is not arbitrary: HydraDB reads it
+with `read_auth_token`, which refuses anything under 32 characters or equal to
+`change-me`, and the process exits about two seconds after `docker run` has
+already printed a container id. The only symptom is a port that never opens, so
+`blastradius wait` checks the length before it waits and tells you to read
+`docker logs hydradb` if the port stays shut.
+
 `RUST_MIN_STACK` is not optional — the query engine recurses deeply enough to
 overflow the default thread stack on real dependency graphs.
 
@@ -111,7 +118,7 @@ pip install -e .
 
 export HYDRA_URL=http://127.0.0.1:8443
 export HYDRA_ADMIN_URL=http://127.0.0.1:9090
-export HYDRA_TOKEN=dev-token
+export HYDRA_TOKEN=local-development-token-32-bytes
 ```
 
 **3. Ingest and ask:**
@@ -234,7 +241,7 @@ $ blastradius incident axioss
 
 | # | The question | Where the answer comes from |
 |---|---|---|
-| 1 | Which internal services are transitively exposed? | the reverse dependency closure, asked one hop count at a time so the answer includes *how far away* it is |
+| 1 | Which internal services are transitively exposed? | the `USES` edges to that exact pinned version — a lockfile is the fully resolved tree, so this cannot miss a service — plus the shortest chain up to a dependency the service actually chose, which is *how far away* it is |
 | 2 | Which version of the dependency introduced the vulnerability? | the `introduced`/`fixed` boundaries carried on the `AFFECTS` edge, with the publication date of the first affected release |
 | 3 | Which applications resolved the compromised version while it was live? | each lockfile's own snapshot date against the window between the bad release and its fix |
 | 4 | Which other packages share maintainers or infrastructure with it? | `MAINTAINS`, in one traversal - a relationship that does not exist in a lockfile at all |
@@ -244,6 +251,15 @@ $ blastradius incident axioss
 Each answer records the statements it ran and how long they took, and the whole
 report is written to `artifacts/incident-*.json` by CI, so "this takes seconds"
 is a measurement rather than a claim.
+
+Question 1 is also where the dialect had to be taken seriously. Walking
+*dependents* upwards — `(bad)<-[:DEPENDS*1..6]-(entry)` — reads naturally and is
+refused outright: a variable-length `MATCH` is planned from the arrow source, and
+the server needs a fixed vertex id there (`variable-length MATCH requires a fixed
+source id`). Reading against the arrow is what the native path procedures are
+for, so the chains come from `algo.MSpaths` with `relDirection: 'incoming'`, and
+a pinned version that no chain explains inside the hop limit is reported as
+exactly that rather than being quietly called a direct dependency.
 
 Question 3 is the one that needs a graph with time in it. A lockfile carries no
 date, so the snapshot date comes from the commit that last touched the file (the

@@ -123,57 +123,95 @@ def _iso(stamp: int | None) -> str | None:
 
 def exposed_services(
     client: HydraClient, package: str, *, max_depth: int = 6
-) -> tuple[Answer, list[dict[str, Any]]]:
-    """Every service that ships this package, directly or through anything.
+) -> tuple[Answer, list[dict[str, Any]], list[queries.Chain]]:
+    """Every service that ships this package, and how far down it sits.
 
-    Depth is asked one hop count at a time because a variable-length bound must
-    be an integer literal in this dialect - which turns out to be the more useful
-    shape anyway: "you depend on it directly" and "it is four levels below a
-    dependency you have never heard of" are different incidents.
+    *Who* is exposed needs no traversal: a lockfile is the fully resolved tree,
+    so a service that gets the package six levels down still has a USES edge to
+    that exact pinned version. One statement therefore answers the question
+    completely - and, unlike a reverse closure, it cannot miss a service because
+    a hop limit was too small.
+
+    *How* it gets in is the traversal, and it runs against the arrow direction
+    (from the compromised version up to a direct dependency), which only the path
+    procedures can do - see the note in ``queries``. The shortest chain to one of
+    the service's own direct dependencies is its depth: 0 means the service pins
+    the package itself, 3 means it is three levels under something it chose.
     """
     statements = [queries.INCIDENT_DIRECT_USERS]
-    direct, ms = _timed(client, queries.INCIDENT_DIRECT_USERS, {"name": package})
+    pinned, total_ms = _timed(client, queries.INCIDENT_DIRECT_USERS, {"name": package})
+
     found: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in direct:
-        found[(row["service"], row["version"])] = {
-            "service": row["service"],
+    service_ids: dict[str, int] = {}
+    for row in pinned:
+        service = row["service"]
+        if isinstance(row.get("service_id"), int):
+            service_ids[service] = int(row["service_id"])
+        found[(service, row["version"])] = {
+            "service": service,
             "version": row["version"],
-            "depth": 0,
-            "entry_point": row["version"],
+            "depth": 0 if row.get("direct") else None,
+            "entry_point": row["version"] if row.get("direct") else None,
             "direct": bool(row.get("direct")),
             "dev": bool(row.get("dev")),
             "captured_at": known_time(row.get("captured_at")),
         }
-    total_ms = ms
-    for depth in range(1, max_depth + 1):
-        statement = queries.INCIDENT_REACHED_AT % (depth, depth)
-        statements.append(statement)
-        rows, ms = _timed(client, statement, {"name": package})
-        total_ms += ms
-        for row in rows:
-            key = (row["service"], row["version"])
-            if key in found:  # already reached at a shorter distance
+
+    # The direct dependencies of every exposed service: the chains have to end
+    # somewhere the service actually chose, not at an arbitrary pinned version.
+    entry_owners: dict[str, set[str]] = {}
+    if any(entry["depth"] is None for entry in found.values()):
+        statements.append(queries.SERVICE_ENTRY_POINTS)
+        for service, service_id in sorted(service_ids.items()):
+            started = time.perf_counter()
+            for key in queries.entry_points(client, service_id):
+                entry_owners.setdefault(key, set()).add(service)
+            total_ms += (time.perf_counter() - started) * 1000
+
+    bad_keys = sorted({row["version"] for row in found.values()})
+    chains: list[queries.Chain] = []
+    if entry_owners and bad_keys:
+        statements.append(queries.BLAST_RADIUS)
+        started = time.perf_counter()
+        chains = queries.blast_radius(
+            client, bad_keys, sorted(entry_owners), max_len=max_depth
+        )
+        total_ms += (time.perf_counter() - started) * 1000
+
+    for chain in chains:
+        if len(chain.keys) < 2:
+            continue
+        bad, entry = chain.keys[0], chain.keys[-1]
+        for service in entry_owners.get(entry, ()):
+            row = found.get((service, bad))
+            if row is None:  # a chain into a service that does not pin it
                 continue
-            found[key] = {
-                "service": row["service"],
-                "version": row["version"],
-                "depth": depth,
-                "entry_point": row.get("entry_point"),
-                "direct": bool(row.get("direct")),
-                "dev": bool(row.get("dev")),
-                "captured_at": known_time(row.get("captured_at")),
-            }
-    rows = sorted(found.values(), key=lambda row: (row["depth"], row["service"], row["version"]))
+            if row["depth"] is None or chain.hops < row["depth"]:
+                row["depth"] = chain.hops
+                row["entry_point"] = entry
+
+    rows = sorted(
+        found.values(),
+        key=lambda row: (row["depth"] is None, row["depth"] or 0, row["service"], row["version"]),
+    )
     services = sorted({row["service"] for row in rows})
+    unexplained = [row for row in rows if row["depth"] is None]
     if rows:
-        deepest = max(row["depth"] for row in rows)
+        deepest = max((row["depth"] for row in rows if row["depth"] is not None), default=0)
         summary = (
             f"{len(services)} service(s) exposed: {', '.join(services)}"
             f" — {len(rows)} pinned version(s), reached at up to {deepest} hop(s)"
         )
+        if unexplained:
+            # Honest about the limit rather than quietly calling them direct:
+            # the lockfile proves they ship it, the graph has no chain within
+            # max_depth hops that explains why.
+            summary += (
+                f"; {len(unexplained)} of them with no chain inside {max_depth} hops"
+            )
     else:
         summary = "no service in this graph ships it, directly or transitively"
-    return Answer(1, QUESTIONS[0], statements, summary, rows, total_ms), rows
+    return Answer(1, QUESTIONS[0], statements, summary, rows, total_ms), rows, chains
 
 
 # -- question 2 -------------------------------------------------------------
@@ -395,19 +433,17 @@ def nearby_lookalikes(client: HydraClient, package: str) -> Answer:
 
 
 def complete_blast_radius(
-    client: HydraClient, package: str, exposure: list[dict[str, Any]], *, max_len: int = 6
+    package: str, exposure: list[dict[str, Any]], chains: list[queries.Chain]
 ) -> Answer:
     """Every chain from a bad version of this package to something we deploy.
 
     Questions 1 and 3 say *who* and *when*; this says *how*, which is what a
     responder has to act on: the chain names the intermediate package to pin, or
-    the direct dependency to drop.
+    the direct dependency to drop. The chains are the ones question 1 already
+    walked - re-running the traversal here would double the cost of the report
+    and could disagree with it.
     """
-    bad_keys = sorted({row["version"] for row in exposure if row["version"].startswith(f"{package}@")})
-    entry_keys = sorted({row["entry_point"] for row in exposure if row.get("entry_point")})
-    started = time.perf_counter()
-    chains = queries.blast_radius(client, bad_keys, entry_keys, max_len=max_len) if bad_keys else []
-    ms = (time.perf_counter() - started) * 1000
+    ms = 0.0
     rows = [{"hops": chain.hops, "chain": chain.render()} for chain in chains]
     rows.sort(key=lambda row: (-row["hops"], row["chain"]))
     services = sorted({row["service"] for row in exposure})
@@ -433,7 +469,7 @@ def investigate(client: HydraClient, package: str, *, max_depth: int = 6) -> Inc
         raise UnknownPackage(package)
     published = {row["version"]: known_time(row.get("published_at")) for row in versions}
 
-    answer_one, exposure = exposed_services(client, package, max_depth=max_depth)
+    answer_one, exposure, chains = exposed_services(client, package, max_depth=max_depth)
     answer_two, advisories = offending_versions(client, package)
     answer_three = resolved_while_live(package, exposure, advisories, published)
     answers = [
@@ -442,6 +478,6 @@ def investigate(client: HydraClient, package: str, *, max_depth: int = 6) -> Inc
         answer_three,
         shared_maintainers(client, package),
         nearby_lookalikes(client, package),
-        complete_blast_radius(client, package, exposure, max_len=max_depth),
+        complete_blast_radius(package, exposure, chains),
     ]
     return Incident(package=package, answers=answers, seconds=time.perf_counter() - started)

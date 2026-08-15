@@ -228,3 +228,50 @@ class TestReadQueryShape:
     def test_hop_bounds_are_still_literals_in_range(self):
         with pytest.raises(ValueError, match="hop bound"):
             queries.depth_profile(None, 1, max_len=99)
+
+
+class TestVariableLengthAnchoring:
+    """The rule that cost a red CI run: a var-length MATCH is planned from the
+    arrow source, and the server refuses it unless that end is a fixed vertex id
+    (``match_reachable_row_pattern``, shard/query.rs). Two consequences, both
+    checked here over *every* statement in the module so a new query cannot
+    reintroduce them:
+
+    * ``(a)<-[:REL*1..3]-(b)`` can never work - the unbound end is the source.
+      Reading against the arrow is what ``algo.MSpaths`` is for.
+    * ``(a)-[:REL*1..3]->(b)`` only works when the pattern starts at a node
+      matched by id, so the planner has a concrete vertex to expand from.
+
+    A fake client answers either shape happily, which is exactly why this is a
+    text check and not a behaviour test.
+    """
+
+    STATEMENTS = {
+        name: value
+        for name, value in vars(queries).items()
+        if name.isupper() and isinstance(value, str) and "MATCH" in value
+    }
+    VARIABLE_LENGTH = re.compile(r"(<-)?\[[^\]]*\*[^\]]*\](->)?")
+
+    def test_the_module_still_has_statements_to_check(self):
+        assert len(self.STATEMENTS) > 10
+
+    @pytest.mark.parametrize("name", sorted(STATEMENTS))
+    def test_no_variable_length_walks_against_the_arrow(self, name):
+        for incoming, _outgoing in self.VARIABLE_LENGTH.findall(self.STATEMENTS[name]):
+            assert not incoming, (
+                f"{name} walks a variable-length pattern backwards; the server "
+                "refuses it with 'variable-length MATCH requires a fixed source "
+                "id'. Use algo.MSpaths with relDirection: 'incoming'."
+            )
+
+    @pytest.mark.parametrize("name", sorted(STATEMENTS))
+    def test_a_variable_length_pattern_starts_from_a_fixed_id(self, name):
+        statement = self.STATEMENTS[name]
+        if not self.VARIABLE_LENGTH.search(statement):
+            return
+        first_node = re.search(r"MATCH \(([^)]*)\)", statement)
+        assert first_node and "{id: $" in first_node.group(1), (
+            f"{name} expands a variable-length pattern from a node that is not "
+            "matched by id"
+        )

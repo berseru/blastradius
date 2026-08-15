@@ -30,6 +30,19 @@ DEFAULT_CELL = "cell-0"
 # row count. 768 KiB leaves room for the query text and the JSON envelope.
 MAX_BODY_BYTES = 768 * 1024
 
+# ``bin/graph_node/config.rs`` refuses to start with "graph auth token must
+# contain at least 32 non-placeholder characters". The container then exits two
+# seconds after ``docker run`` returns successfully, so the only symptom is a
+# port that never opens - which is why the length is checked on this side too.
+MIN_TOKEN_CHARS = 32
+
+NOT_LISTENING_HINT = (
+    "nothing is listening on %s yet.\n"
+    "  A container that started and then exited looks exactly like this. Run\n"
+    "  `docker logs hydradb` - the usual answer is the auth token: HydraDB\n"
+    f"  refuses to start with a token shorter than {MIN_TOKEN_CHARS} characters."
+)
+
 HEALTHCHECK_WRITE = (
     "UNWIND $rows AS row MERGE (n {id: row.vertex}) SET n:Healthcheck, n.at = row.at"
 )
@@ -185,15 +198,27 @@ class HydraClient:
     def close(self) -> None:
         self._client.close()
 
-    def wait_ready(self, admin_url: str = "http://127.0.0.1:9090", timeout_s: float = 180.0) -> float:
+    def wait_ready(
+        self,
+        admin_url: str = "http://127.0.0.1:9090",
+        timeout_s: float = 180.0,
+        hint_after: float = 20.0,
+    ) -> float:
         """Block until /readyz answers *and* a real round trip succeeds.
 
         A listening port is not proof the node works, so readiness ends with a
         write/read round trip on a scratch vertex.
+
+        A node that never opens the port has usually exited during startup, and
+        waiting four silent minutes for that is a bad first experience - it
+        looks like this project hanging. So after ``hint_after`` seconds of
+        nothing listening, the likely cause is printed instead of being kept for
+        the traceback.
         """
         deadline = time.monotonic() + timeout_s
         started = time.monotonic()
         last: Exception | None = None
+        hinted = False
         while time.monotonic() < deadline:
             try:
                 response = httpx.get(f"{admin_url.rstrip('/')}/readyz", timeout=5.0)
@@ -201,9 +226,15 @@ class HydraClient:
                     break
             except Exception as exc:  # noqa: BLE001 - retried until the deadline
                 last = exc
+            if not hinted and time.monotonic() - started > hint_after:
+                hinted = True
+                print(NOT_LISTENING_HINT % admin_url, flush=True)
             time.sleep(1.0)
         else:
-            raise TimeoutError(f"/readyz never became ready in {timeout_s}s (last error: {last})")
+            raise TimeoutError(
+                f"/readyz never became ready in {timeout_s}s (last error: {last})\n"
+                + NOT_LISTENING_HINT % admin_url
+            )
 
         while time.monotonic() < deadline:
             try:

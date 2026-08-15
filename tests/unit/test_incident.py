@@ -27,6 +27,8 @@ LIVE_FROM = 1_767_225_600  # 2026-01-01
 DISCLOSED = 1_772_323_200  # 2026-03-01
 WEB_SNAPSHOT = 1_769_904_000  # 2026-02-01, inside the window and before disclosure
 BATCH_SNAPSHOT = 1_748_736_000  # 2025-06-01, before the bad version existed
+WEB_ID = 11
+BATCH_ID = 12
 
 
 def _chain() -> Path:
@@ -57,24 +59,22 @@ class FakeClient:
             return Result(["version", "published_at"], [[EVIL, LIVE_FROM]], 0.0)
 
         if statement == queries.INCIDENT_DIRECT_USERS:
+            # A lockfile lists the resolved tree, so the web app has a USES edge
+            # to the bad version too - it just did not choose it (direct=False).
             return Result(
-                ["service", "captured_at", "version", "version_published", "direct", "dev"],
-                [["batch-job", BATCH_SNAPSHOT, EVIL, LIVE_FROM, True, False]],
+                ["service_id", "service", "captured_at", "version", "version_published",
+                 "direct", "dev"],
+                [
+                    [BATCH_ID, "batch-job", BATCH_SNAPSHOT, EVIL, LIVE_FROM, True, False],
+                    [WEB_ID, "web-app", WEB_SNAPSHOT, EVIL, LIVE_FROM, False, False],
+                ],
                 0.0,
             )
 
-        if statement.startswith("\nMATCH (p:Pkg {name: $name})<-[:OF]-(bad:Ver)<-[:DEPENDS"):
-            # INCIDENT_REACHED_AT, one hop count at a time: the web app is two
-            # hops away, so every other depth must come back empty.
-            if "*2..2" in statement:
-                return Result(
-                    ["service", "captured_at", "version", "entry_point", "direct", "dev"],
-                    [["web-app", WEB_SNAPSHOT, EVIL, "web-app@1.0.0", True, False]],
-                    0.0,
-                )
-            return Result(
-                ["service", "captured_at", "version", "entry_point", "direct", "dev"], [], 0.0
-            )
+        if statement == queries.SERVICE_ENTRY_POINTS:
+            if parameters.get("service_id") == WEB_ID:
+                return Result(["version"], [["web-app@1.0.0"]], 0.0)
+            return Result(["version"], [[EVIL]], 0.0)
 
         if statement == queries.INCIDENT_ADVISORIES:
             return Result(
@@ -162,7 +162,11 @@ def test_question_three_abstains_when_the_snapshot_date_is_unknown():
     def blank_capture(statement, parameters=None):
         result = original(statement, parameters)
         if statement == queries.INCIDENT_DIRECT_USERS:
-            return Result(result.columns, [["batch-job", 0, EVIL, LIVE_FROM, True, False]], 0.0)
+            return Result(
+                result.columns,
+                [[BATCH_ID, "batch-job", 0, EVIL, LIVE_FROM, True, False]],
+                0.0,
+            )
         return result
 
     client.run = blank_capture  # type: ignore[method-assign]
@@ -202,3 +206,27 @@ def test_every_answer_carries_the_statements_it_ran():
     payload = report.as_dict()
     assert payload["package"] == "evil"
     assert [entry["number"] for entry in payload["answers"]] == [1, 2, 3, 4, 5, 6]
+
+
+def test_a_pin_with_no_chain_is_reported_as_unexplained_not_as_direct():
+    """The lockfile proves the app ships it; if no chain explains how, say so.
+
+    Calling it a direct dependency would send a responder to the wrong file, and
+    dropping it would under-report the blast radius - the one failure mode this
+    product cannot have.
+    """
+    client = FakeClient()
+    original = client.run
+
+    def no_paths(statement, parameters=None):
+        if statement.startswith("\nCALL algo.MSpaths"):
+            return Result(["path"], [], 0.0)
+        return original(statement, parameters)
+
+    client.run = no_paths  # type: ignore[method-assign]
+    report = investigate(client, "evil")
+    row = next(row for row in answers(report)[1].rows if row["service"] == "web-app")
+    assert row["depth"] is None and row["entry_point"] is None
+    assert row["direct"] is False
+    assert "no chain inside" in answers(report)[1].summary
+    assert answers(report)[6].rows == []

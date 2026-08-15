@@ -36,6 +36,57 @@ DEPSDEV_URL = "https://api.deps.dev/v3alpha"
 USER_AGENT = "blastradius/0.1 (+https://github.com/blastradius)"
 
 
+class HostLimit:
+    """A ceiling for one host: how many requests at once, and how close together.
+
+    The download counter is the reason this exists. Scoped names (``@babel/…``)
+    cannot go through its bulk endpoint, so they are asked for one at a time, and
+    a first run with a cold cache asks for hundreds of them. At twelve in flight
+    it answers 429 in bulk, the retries expire, and the run ends with hundreds of
+    packages whose popularity is unknown - which silently loses typosquat edges,
+    because a lookalike is only reported when the *target* is popular. Slower and
+    complete beats fast and wrong.
+    """
+
+    def __init__(self, concurrency: int = 1, min_interval: float = 0.0) -> None:
+        self._semaphore = asyncio.Semaphore(concurrency)
+        self.min_interval = min_interval
+        self._next_at = 0.0
+
+    async def __aenter__(self) -> "HostLimit":
+        await self._semaphore.acquire()
+        loop = asyncio.get_event_loop()
+        wait = self._next_at - loop.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self._next_at = asyncio.get_event_loop().time() + self.min_interval
+        self._semaphore.release()
+
+
+#: A backoff longer than this is worse than the failure: the run stalls.
+MAX_BACKOFF = 20.0
+
+#: 4-5 requests a second to the counter, one at a time. Measured against the
+#: 86 lost documents a 12-way cold run produced.
+DEFAULT_HOST_LIMITS: dict[str, tuple[int, float]] = {
+    "api.npmjs.org": (1, 0.22),
+}
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    """``Retry-After`` in seconds, when the server bothered to say."""
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw.strip()))
+    except ValueError:  # an HTTP-date; the backoff is used instead
+        return None
+
+
 @dataclass
 class PackageMeta:
     name: str
@@ -76,9 +127,21 @@ class Fetcher:
         concurrency: int = 12,
         timeout: float = 60.0,
         retries: int = 4,
+        throttle_retries: int = 8,
+        host_limits: dict[str, tuple[int, float]] | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.retries = retries
+        # A 429 is not an error, it is an instruction, so it gets its own budget:
+        # spending the error budget on being told to slow down is how documents
+        # got lost.
+        self.throttle_retries = throttle_retries
+        self._host_limits = {
+            host: HostLimit(concurrency, interval)
+            for host, (concurrency, interval) in (
+                DEFAULT_HOST_LIMITS if host_limits is None else host_limits
+            ).items()
+        }
         self._semaphore = asyncio.Semaphore(concurrency)
         self._client = httpx.AsyncClient(
             timeout=timeout,
@@ -138,19 +201,44 @@ class Fetcher:
         cached = self._read_cache(bucket, key)
         if cached is not None:
             return cached
+        limit = self._host_limits.get(httpx.URL(url).host or "")
         async with self._semaphore:
             delay = 1.0
             last = "no attempt made"
-            for attempt in range(self.retries):
+            attempts = 0
+            errors_left = self.retries
+            throttles_left = self.throttle_retries
+            while True:
                 try:
-                    response = await self._client.get(url)
+                    attempts += 1
+                    if limit is not None:
+                        async with limit:
+                            response = await self._client.get(url)
+                    else:
+                        response = await self._client.get(url)
                     if response.status_code == 404:
                         self._write_cache(bucket, key, {})
                         return {}
-                    if response.status_code in (429, 500, 502, 503, 504):
+                    if response.status_code == 429:
+                        # Being asked to wait is not a failure until the budget
+                        # for waiting runs out, and the server's own number is
+                        # better than any backoff this code can invent.
+                        last = "HTTP 429"
+                        throttles_left -= 1
+                        if throttles_left <= 0:
+                            break
+                        await asyncio.sleep(
+                            retry_after_seconds(response) or min(delay, MAX_BACKOFF)
+                        )
+                        delay = min(delay * 2, MAX_BACKOFF)
+                        continue
+                    if response.status_code in (500, 502, 503, 504):
                         last = f"HTTP {response.status_code}"
-                        await asyncio.sleep(delay)
-                        delay *= 2
+                        errors_left -= 1
+                        if errors_left <= 0:
+                            break
+                        await asyncio.sleep(min(delay, MAX_BACKOFF))
+                        delay = min(delay * 2, MAX_BACKOFF)
                         continue
                     response.raise_for_status()
                     payload = response.json()
@@ -159,11 +247,12 @@ class Fetcher:
                     return payload
                 except (httpx.HTTPError, json.JSONDecodeError) as error:
                     last = f"{type(error).__name__}: {error}"[:120]
-                    if attempt == self.retries - 1:
+                    errors_left -= 1
+                    if errors_left <= 0:
                         break
-                    await asyncio.sleep(delay)
-                    delay *= 2
-        self.failures.append(f"{url} ({last} after {self.retries} attempts)")
+                    await asyncio.sleep(min(delay, MAX_BACKOFF))
+                    delay = min(delay * 2, MAX_BACKOFF)
+        self.failures.append(f"{url} ({last} after {attempts} attempts)")
         return None
 
     # -- sources -----------------------------------------------------------

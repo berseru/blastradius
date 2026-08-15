@@ -18,6 +18,7 @@ import asyncio
 import gzip
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -29,11 +30,15 @@ class Handler(BaseHTTPRequestHandler):
     """Answers whatever ``server.script`` says, per path."""
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
-        status, body = self.server.script(self.path)
+        answer = self.server.script(self.path)
+        status, body = answer[0], answer[1]
+        headers = answer[2] if len(answer) > 2 else {}
         payload = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        for name, value in headers.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -65,9 +70,14 @@ def registry(monkeypatch):
         server.shutdown()
 
 
-def fetch(tmp_path, name="left-pad", retries=2):
+def fetch(tmp_path, name="left-pad", retries=2, throttle_retries=2, host_limits=None):
     async def main():
-        async with npmdata.Fetcher(cache_dir=tmp_path, retries=retries) as fetcher:
+        async with npmdata.Fetcher(
+            cache_dir=tmp_path,
+            retries=retries,
+            throttle_retries=throttle_retries,
+            host_limits=host_limits or {},
+        ) as fetcher:
             meta = await fetcher.package_meta(name)
             return meta, list(fetcher.failures), fetcher.hits, fetcher.misses
 
@@ -149,3 +159,80 @@ def test_ingest_stats_carry_the_failures(tmp_path):
 
     assert payload["fetch_failures"] == 2
     assert payload["fetch_failure_examples"][0].startswith("https://registry.npmjs.org/x")
+
+
+PACKUMENT = {"name": "left-pad", "versions": {}, "time": {}, "maintainers": []}
+
+
+def test_the_servers_own_retry_after_is_obeyed(registry, tmp_path):
+    """A 429 carrying Retry-After is an instruction, not a failure.
+
+    The old loop spent its whole retry budget on rate limits and then dropped the
+    document. Here the counter says "one second", so one second later the fetch
+    has to succeed - with the package present, not merely with a nicer message.
+    """
+    calls: list[float] = []
+
+    def script(path: str):
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            return 429, {"error": "slow down"}, {"Retry-After": "1"}
+        return 200, PACKUMENT
+
+    registry(script)
+    started = time.monotonic()
+    meta, failures, _hits, _misses = fetch(tmp_path)
+
+    assert meta is not None and failures == []
+    assert len(calls) == 2
+    assert time.monotonic() - started >= 1.0, "the Retry-After delay was ignored"
+
+
+def test_one_host_is_asked_one_request_at_a_time(registry, tmp_path):
+    """The download counter gets a queue, not twelve parallel requests.
+
+    Its bulk endpoint refuses scoped names, so those are asked for one by one -
+    hundreds of them on a cold run. Without this ceiling the counter answers 429
+    to most of them, and a package with no download count silently drops out of
+    the typosquat comparison.
+    """
+    arrivals: list[float] = []
+
+    def script(path: str):
+        arrivals.append(time.monotonic())
+        return 200, PACKUMENT
+
+    registry(script)
+
+    async def main():
+        async with npmdata.Fetcher(
+            cache_dir=tmp_path, host_limits={"127.0.0.1": (1, 0.2)}
+        ) as fetcher:
+            await asyncio.gather(*(fetcher.package_meta(f"pkg-{index}") for index in range(3)))
+            return list(fetcher.failures)
+
+    assert asyncio.run(main()) == []
+    assert len(arrivals) == 3
+    gaps = [second - first for first, second in zip(arrivals, arrivals[1:])]
+    assert all(gap >= 0.15 for gap in gaps), f"requests arrived {gaps}s apart"
+
+
+def test_the_limiter_only_applies_to_the_host_it_names(registry, tmp_path):
+    arrivals: list[float] = []
+
+    def script(path: str):
+        arrivals.append(time.monotonic())
+        return 200, PACKUMENT
+
+    registry(script)
+
+    async def main():
+        async with npmdata.Fetcher(
+            cache_dir=tmp_path, host_limits={"api.npmjs.org": (1, 5.0)}
+        ) as fetcher:
+            await asyncio.gather(*(fetcher.package_meta(f"pkg-{index}") for index in range(3)))
+
+    started = time.monotonic()
+    asyncio.run(main())
+    assert time.monotonic() - started < 5.0, "an unrelated host was throttled"
+    assert len(arrivals) == 3

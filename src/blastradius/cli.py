@@ -24,7 +24,7 @@ from typing import Any, Callable
 import httpx
 
 from . import queries
-from .hydra import HydraClient, HydraError
+from .hydra import MIN_TOKEN_CHARS, HydraClient, HydraError
 from .lockfile import Lockfile, load_lockfile
 from .pipeline import ingest as run_ingest
 from .queries import ServiceReport
@@ -95,6 +95,19 @@ def discover_lockfiles(directory: Path = DEFAULT_LOCKFILES) -> list[Lockfile]:
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
+    # Checked before waiting rather than after failing: the node reads the same
+    # token from its file, and if it is too short the node is already dead. Four
+    # minutes of silence followed by "connection refused" hides the one fact
+    # that fixes it.
+    token = os.environ.get("HYDRA_TOKEN", "")
+    if 0 < len(token) < MIN_TOKEN_CHARS:
+        print(
+            f"HYDRA_TOKEN is {len(token)} characters; HydraDB refuses any token "
+            f"under {MIN_TOKEN_CHARS} and exits at startup. Use a longer token "
+            "in both the token file and this variable.",
+            file=sys.stderr,
+        )
+        return 2
     with client_from_env() as client:
         elapsed = client.wait_ready(
             admin_url=os.environ.get("HYDRA_ADMIN_URL", "http://127.0.0.1:9090"),

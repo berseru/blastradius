@@ -224,20 +224,28 @@ RETURN adv.osv AS advisory, adv.kind AS kind, adv.severity AS severity,
        v.key AS version, v.published_at AS version_published
 """
 
+# Every pinned version of this package, and who pins it. A lockfile lists the
+# *whole* resolved tree, not only the top-level names, so a USES edge exists for
+# a transitive dependency as well - which makes this one statement the complete
+# answer to "who is exposed", with no traversal at all.
 INCIDENT_DIRECT_USERS = """
 MATCH (p:Pkg {name: $name})<-[:OF]-(v:Ver)<-[u:USES]-(s:Svc)
-RETURN s.name AS service, s.captured_at AS captured_at, v.key AS version,
-       v.published_at AS version_published, u.direct AS direct, u.dev AS dev
+RETURN s.id AS service_id, s.name AS service, s.captured_at AS captured_at,
+       v.key AS version, v.published_at AS version_published,
+       u.direct AS direct, u.dev AS dev
 """
 
-# The reverse-dependency closure, one hop count at a time: the hop bounds have
-# to be integer literals, and asking depth by depth also answers "how far away
-# is it" instead of only "is it reachable".
-INCIDENT_REACHED_AT = """
-MATCH (p:Pkg {name: $name})<-[:OF]-(bad:Ver)<-[:DEPENDS*%d..%d]-(entry:Ver)<-[u:USES]-(s:Svc)
-RETURN s.name AS service, s.captured_at AS captured_at, bad.key AS version,
-       entry.key AS entry_point, u.direct AS direct, u.dev AS dev
-"""
+# There is deliberately no "reverse closure" MATCH here. A variable-length MATCH
+# is planned from the *arrow source* of the pattern, and the server refuses it
+# unless that end resolves to a fixed vertex id (`match_reachable_row_pattern`
+# in shard/query.rs: "variable-length MATCH requires a fixed source id"). Walking
+# dependents upwards - `(bad)<-[:DEPENDS*1..n]-(entry)` - puts the unbound end at
+# the arrow source, so it cannot be expressed that way at all. Reading the graph
+# against the arrow direction is what the path procedures are for, and
+# `BLAST_RADIUS` above already does it with `relDirection: 'incoming'`, so the
+# incident view reuses that instead of a second, weaker mechanism. The self test
+# is what caught the difference: the unit tests fake the client, and a fake will
+# happily answer a statement no server accepts.
 
 SHARED_MAINTAINERS = """
 MATCH (p:Pkg {name: $name})<-[:MAINTAINS]-(m:Maint)-[:MAINTAINS]->(other:Pkg)
