@@ -32,6 +32,7 @@ from typing import Any
 from . import queries
 from .hydra import HydraClient
 from .queries import known_time
+from .versions import sort_versions
 
 #: The questions, quoted from the track description they come from.
 QUESTIONS = (
@@ -110,6 +111,23 @@ def _timed(client: HydraClient, statement: str, parameters: dict | None = None):
 
 def _versions(client: HydraClient, package: str) -> list[dict[str, Any]]:
     return client.run(queries.PACKAGE_VERSIONS, {"name": package}).dicts()
+
+
+def _semver_sorted(keys: set[str]) -> list[str]:
+    """``name@version`` keys in semver order, not lexicographic order.
+
+    ``sorted()`` puts ``pkg@1.10.0`` before ``pkg@1.9.0``, which makes
+    "the first affected release" - and the publication date reported next to it -
+    simply wrong on any package that reached a two-digit patch or minor.
+    Unparseable versions keep their lexicographic place at the end rather than
+    disappearing: this is a report, not a filter.
+    """
+    by_version: dict[str, list[str]] = {}
+    for key in keys:
+        by_version.setdefault(key.rpartition("@")[2], []).append(key)
+    ordered = [k for version in sort_versions(list(by_version)) for k in sorted(by_version[version])]
+    rest = sorted(set(keys) - set(ordered))
+    return ordered + rest
 
 
 def _iso(stamp: int | None) -> str | None:
@@ -244,7 +262,7 @@ def offending_versions(client: HydraClient, package: str) -> tuple[Answer, list[
         entry["affected_versions"].append(row["version"])
     rows = []
     for entry in grouped.values():
-        affected = sorted(set(entry["affected_versions"]))
+        affected = _semver_sorted(set(entry["affected_versions"]))
         entry["affected_versions"] = affected
         first = affected[0] if affected else None
         entry["affected_in_graph"] = len(affected)

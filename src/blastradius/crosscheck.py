@@ -142,9 +142,20 @@ def compare_hit(hit: dict) -> Comparison:
     if not affected:
         differences.append(f"OSV does not mark {version} affected: {grounds}")
 
-    ours_disclosed = time.strftime("%Y-%m-%d", time.gmtime(int(hit["disclosed_at"])))
+    # The graph writes an unknown timestamp as 0 and the API hands it back as
+    # null, so this field can legitimately be missing. int(None) used to end the
+    # whole crosscheck in a TypeError - one undated advisory taking down the only
+    # check that reads a second source.
+    raw_disclosed = hit.get("disclosed_at")
+    ours_disclosed = (
+        time.strftime("%Y-%m-%d", time.gmtime(int(raw_disclosed)))
+        if isinstance(raw_disclosed, (int, float)) and raw_disclosed
+        else None
+    )
     theirs = (record.get("published") or "")[:10]
-    if theirs and theirs != ours_disclosed:
+    if theirs and ours_disclosed is None:
+        differences.append(f"no disclosure date here, {theirs} at OSV")
+    elif theirs and theirs != ours_disclosed:
         differences.append(f"disclosed {ours_disclosed} here, {theirs} at OSV")
 
     ours_severity = (hit.get("severity") or "UNKNOWN").upper()
