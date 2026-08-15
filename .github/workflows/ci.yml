@@ -11,6 +11,12 @@ on:
       seed_packages:
         description: "How many seed packages to ingest"
         default: "250"
+      scale:
+        description: "Also run the scale-evidence job (slow)"
+        default: "false"
+      scale_levels:
+        description: "Seed counts for the scale ladder"
+        default: "143 300 600 1200"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -62,3 +68,38 @@ jobs:
         with:
           name: run-artifacts
           path: artifacts/
+
+  scale:
+    name: scale evidence
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.scale == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore data cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: npm-scale-${{ hashFiles('scripts/seed_packages_scale.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            npm-scale-${{ hashFiles('scripts/seed_packages_scale.txt') }}-
+            npm-scale-
+
+      - name: Ingest and query a growing graph
+        env:
+          SCALE_LEVELS: ${{ github.event.inputs.scale_levels || '143 300 600 1200' }}
+        run: bash ci/scale.sh
+
+      - name: HydraDB logs
+        if: always()
+        run: bash ci/collect-logs.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale-artifacts
+          path: artifacts/scale/
