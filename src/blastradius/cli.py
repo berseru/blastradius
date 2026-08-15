@@ -309,6 +309,16 @@ def verify(client: HydraClient) -> dict:
                 "timings_ms": {key: round(value, 1) for key, value in service.timings_ms.items()},
             }
         )
+    # The receipt for the claim "HydraDB does the work": every number above came
+    # out of this many statements against this node, and the round-trip time is
+    # the database's, not this process's.
+    report["hydra"] = {
+        "endpoint": client.base_url,
+        "graph": client.graph,
+        "cell": client.cell,
+        "queries_run": client.queries_run,
+        "total_query_ms": round(client.total_query_ms, 1),
+    }
     return report
 
 
@@ -318,6 +328,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(json.dumps(report, indent=2, default=str)[:4000])
+    receipt = report["hydra"]
+    print(
+        f"{receipt['queries_run']} queries against {receipt['endpoint']} "
+        f"(graph {receipt['graph']}, cell {receipt['cell']}) in "
+        f"{receipt['total_query_ms'] / 1000:.1f}s of server time"
+    )
 
     if report["failures"]:
         print(f"{len(report['failures'])} query failures", file=sys.stderr)

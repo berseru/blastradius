@@ -46,12 +46,34 @@ class HostLimit:
     packages whose popularity is unknown - which silently loses typosquat edges,
     because a lookalike is only reported when the *target* is popular. Slower and
     complete beats fast and wrong.
+
+    The spacing is *adaptive* because a fixed one cannot be right: the counter is
+    rate limited per source address, and on a shared CI runner the budget is
+    shared with whoever else is on that address. Each 429 widens the gap for
+    every later request to the same host, and each success narrows it again, so
+    the run settles at whatever pace the server is willing to serve today
+    instead of arguing with it one request at a time.
     """
 
-    def __init__(self, concurrency: int = 1, min_interval: float = 0.0) -> None:
+    def __init__(
+        self,
+        concurrency: int = 1,
+        min_interval: float = 0.0,
+        max_interval: float = 2.0,
+    ) -> None:
         self._semaphore = asyncio.Semaphore(concurrency)
+        self.base_interval = min_interval
         self.min_interval = min_interval
+        self.max_interval = max(min_interval, max_interval)
         self._next_at = 0.0
+
+    def penalise(self) -> None:
+        """A 429 arrived: everyone behind this request waits longer."""
+        self.min_interval = min(max(self.min_interval * 2, 0.5), self.max_interval)
+
+    def relax(self) -> None:
+        """A request went through: give the gap back, slowly."""
+        self.min_interval = max(self.base_interval, self.min_interval * 0.8)
 
     async def __aenter__(self) -> "HostLimit":
         await self._semaphore.acquire()
@@ -128,6 +150,7 @@ class Fetcher:
         timeout: float = 60.0,
         retries: int = 4,
         throttle_retries: int = 8,
+        optional_throttle_retries: int = 3,
         host_limits: dict[str, tuple[int, float]] | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir)
@@ -136,6 +159,9 @@ class Fetcher:
         # spending the error budget on being told to slow down is how documents
         # got lost.
         self.throttle_retries = throttle_retries
+        # A decoration that is being throttled gives up early rather than
+        # holding the run open: the gap it leaves is reported, not hidden.
+        self.optional_throttle_retries = optional_throttle_retries
         self._host_limits = {
             host: HostLimit(concurrency, interval)
             for host, (concurrency, interval) in (
@@ -151,6 +177,10 @@ class Fetcher:
         self.hits = 0
         self.misses = 0
         self.failures: list[str] = []
+        # Documents whose absence degrades the output without invalidating it -
+        # see ``_get_json``. Kept apart from ``failures`` so a run can be strict
+        # about the first list and honest about the second.
+        self.optional_failures: list[str] = []
 
     async def __aenter__(self) -> "Fetcher":
         return self
@@ -188,15 +218,30 @@ class Fetcher:
 
     # -- http --------------------------------------------------------------
 
-    async def _get_json(self, url: str, bucket: str, key: str) -> Any | None:
+    async def _get_json(
+        self,
+        url: str,
+        bucket: str,
+        key: str,
+        *,
+        optional: bool = False,
+    ) -> Any | None:
         """Fetch one document, or record *why* it could not be fetched.
 
         Every path out of this function that returns ``None`` has to leave a
-        trace in ``failures``. A package lost to a rate limit is a package whose
-        versions, dependencies and maintainers never enter the graph, and a blast
-        radius that is too small is worse than one that is missing outright: it
-        reads as safety. This used to be silent when the retry budget was spent
-        on 429s rather than on exceptions.
+        trace. A package lost to a rate limit is a package whose versions,
+        dependencies and maintainers never enter the graph, and a blast radius
+        that is too small is worse than one that is missing outright: it reads as
+        safety. This used to be silent when the retry budget was spent on 429s
+        rather than on exceptions.
+
+        ``optional=True`` is for a document that only decorates the output - a
+        popularity number for a package no lookalike test depends on. It is
+        recorded in ``optional_failures`` and gives up sooner, because a judge
+        running the Quickstart behind a rate limited CI address should not have
+        the whole ingest fail over a decoration. What is *not* optional is
+        anything a decision reads: those keep the strict budget and the strict
+        list.
         """
         cached = self._read_cache(bucket, key)
         if cached is not None:
@@ -207,7 +252,9 @@ class Fetcher:
             last = "no attempt made"
             attempts = 0
             errors_left = self.retries
-            throttles_left = self.throttle_retries
+            throttles_left = (
+                self.optional_throttle_retries if optional else self.throttle_retries
+            )
             while True:
                 try:
                     attempts += 1
@@ -224,6 +271,8 @@ class Fetcher:
                         # for waiting runs out, and the server's own number is
                         # better than any backoff this code can invent.
                         last = "HTTP 429"
+                        if limit is not None:
+                            limit.penalise()
                         throttles_left -= 1
                         if throttles_left <= 0:
                             break
@@ -241,6 +290,8 @@ class Fetcher:
                         delay = min(delay * 2, MAX_BACKOFF)
                         continue
                     response.raise_for_status()
+                    if limit is not None:
+                        limit.relax()
                     payload = response.json()
                     self._write_cache(bucket, key, payload)
                     self.misses += 1
@@ -252,7 +303,8 @@ class Fetcher:
                         break
                     await asyncio.sleep(min(delay, MAX_BACKOFF))
                     delay = min(delay * 2, MAX_BACKOFF)
-        self.failures.append(f"{url} ({last} after {attempts} attempts)")
+        record = f"{url} ({last} after {attempts} attempts)"
+        (self.optional_failures if optional else self.failures).append(record)
         return None
 
     # -- sources -----------------------------------------------------------
@@ -307,34 +359,53 @@ class Fetcher:
             )
         return ResolvedGraph(root=(name, version), nodes=nodes, edges=edges)
 
-    async def weekly_downloads(self, names: Iterable[str]) -> dict[str, int]:
+    async def weekly_downloads(
+        self,
+        names: Iterable[str],
+        required: Iterable[str] = (),
+    ) -> dict[str, int]:
         """Last week's download count per package, from npm's public counter.
 
         Popularity is what separates a typosquat from an ordinary small library,
         so it is measured rather than assumed. The bulk endpoint takes many
         unscoped names at once; scoped names have to be asked for one by one,
         which is why the two are split here.
+
+        ``required`` names are the ones a decision depends on - the two sides of
+        every pair the lookalike test will weigh. Their counts are fetched with
+        the strict budget, and a miss fails the run. Every other count is a
+        column in a table: worth asking for, not worth failing over, because the
+        one-at-a-time scoped requests are exactly what a rate limit hits first.
         """
         unique = sorted({name for name in names if name})
+        needed = set(required)
         scoped = [name for name in unique if name.startswith("@")]
         plain = [name for name in unique if not name.startswith("@")]
-        # 64 keeps the URL well inside the length the endpoint accepts.
+        # 64 keeps the URL well inside the length the endpoint accepts. A bulk
+        # request is a handful for the whole run, so it is never optional.
         batches = [plain[index : index + 64] for index in range(0, len(plain), 64)]
         payloads = await asyncio.gather(
             *(self._downloads_batch(batch) for batch in batches),
-            *(self._downloads_batch([name]) for name in scoped),
+            *(
+                self._downloads_batch([name], optional=name not in needed)
+                for name in scoped
+            ),
         )
         counts: dict[str, int] = {}
         for payload in payloads:
             counts.update(payload)
         return counts
 
-    async def _downloads_batch(self, batch: list[str]) -> dict[str, int]:
+    async def _downloads_batch(
+        self, batch: list[str], *, optional: bool = False
+    ) -> dict[str, int]:
         if not batch:
             return {}
         digest = hashlib.sha1(",".join(batch).encode("utf-8")).hexdigest()[:12]
         url = f"{DOWNLOADS_URL}/{','.join(batch)}"
-        document = await self._get_json(url, "downloads", f"{batch[0]}-{len(batch)}-{digest}")
+        document = await self._get_json(
+            url, "downloads", f"{batch[0]}-{len(batch)}-{digest}", optional=optional
+        )
         if not isinstance(document, dict) or not document:
             return {}
         # One name in the path returns a single record, several return a map of

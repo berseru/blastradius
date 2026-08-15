@@ -86,8 +86,15 @@ def damerau_distance_within(left: str, right: str, limit: int = 1) -> int | None
 def candidate_pairs(names: Iterable[str]) -> list[tuple[str, str]]:
     """Unordered pairs within Damerau-Levenshtein distance 1.
 
-    Scoped names are compared on their unscoped part as well, because
-    ``@types/express`` is not a typosquat of ``express`` but ``expresss`` is.
+    Names are compared exactly as npm installs them, scope included, so
+    ``@types/express`` is never paired with ``express``: an official scoped
+    rewrite is not an impersonation, and the two names are nowhere near one
+    keystroke apart anyway. ``expresss`` still is.
+
+    This function also decides which download counts the ingest must have:
+    ``pipeline.fetch_inputs`` fetches the popularity of every name that appears
+    here under the strict budget, because those are the numbers
+    ``find_typosquats`` weighs.
     """
     buckets: dict[str, set[str]] = defaultdict(set)
     unique = {name for name in names if len(name) >= MIN_NAME_LENGTH}

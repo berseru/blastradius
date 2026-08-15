@@ -236,3 +236,113 @@ def test_the_limiter_only_applies_to_the_host_it_names(registry, tmp_path):
     asyncio.run(main())
     assert time.monotonic() - started < 5.0, "an unrelated host was throttled"
     assert len(arrivals) == 3
+
+
+# -- popularity numbers: which ones are allowed to go missing ----------------
+#
+# The download counter is the one source that cannot be asked in bulk for
+# scoped names, so a cold run asks it hundreds of times one at a time and a
+# shared CI address gets rate limited part way through. Failing the whole ingest
+# over that punishes a judge for npm's traffic policy. But the counts are not
+# decoration everywhere: the lookalike test compares two names *by popularity*,
+# so for the names it will weigh, a missing count is a wrong answer waiting to
+# happen. The split below is that distinction, and these tests pin it.
+
+
+@pytest.fixture
+def counter(monkeypatch):
+    """Point the fetcher's download counter at a local server."""
+
+    servers: list[ThreadingHTTPServer] = []
+
+    def _serve(script):
+        server, base = start(script)
+        servers.append(server)
+        monkeypatch.setattr(npmdata, "DOWNLOADS_URL", base + "/downloads/point/last-week")
+        return base
+
+    yield _serve
+    for server in servers:
+        server.shutdown()
+
+
+def downloads(tmp_path, names, required=()):
+    async def main():
+        async with npmdata.Fetcher(
+            cache_dir=tmp_path, retries=2, throttle_retries=2, host_limits={}
+        ) as fetcher:
+            counts = await fetcher.weekly_downloads(names, required=required)
+            return counts, list(fetcher.failures), list(fetcher.optional_failures)
+
+    return asyncio.run(main())
+
+
+def test_a_count_nothing_depends_on_is_reported_not_fatal(counter, tmp_path):
+    """@babel/x is not a lookalike of anything: its 429 must not fail the run."""
+    counter(lambda path: (429, {"error": "slow down"}))
+
+    counts, failures, degraded = downloads(tmp_path, ["@babel/core"])
+
+    assert counts == {}
+    assert failures == [], "an optional count was charged to the strict budget"
+    assert len(degraded) == 1 and "@babel/core" in degraded[0]
+
+
+def test_a_count_a_decision_depends_on_is_still_fatal(counter, tmp_path):
+    """Both sides of a lookalike pair are weighed by popularity, so both count."""
+    counter(lambda path: (429, {"error": "slow down"}))
+
+    counts, failures, degraded = downloads(
+        tmp_path, ["@scope/axios", "@scope/axioss"], required=["@scope/axioss"]
+    )
+
+    assert counts == {}
+    assert len(failures) == 1 and "@scope/axioss" in failures[0]
+    assert len(degraded) == 1 and "@scope/axios" in degraded[0]
+
+
+def test_unscoped_names_are_asked_for_in_one_request(counter, tmp_path):
+    """The bulk endpoint is why unscoped names are never the rate-limit problem."""
+    paths: list[str] = []
+
+    def script(path: str):
+        paths.append(path)
+        return 200, {"axios": {"downloads": 11}, "chalk": {"downloads": 22}}
+
+    counter(script)
+    counts, failures, degraded = downloads(tmp_path, ["axios", "chalk"])
+
+    assert counts == {"axios": 11, "chalk": 22}
+    assert failures == [] and degraded == []
+    assert len(paths) == 1, f"one bulk request expected, got {paths}"
+
+
+def test_a_429_widens_the_gap_for_every_later_request():
+    """The pace is negotiated with the server, not fixed in advance."""
+    limit = npmdata.HostLimit(concurrency=1, min_interval=0.2, max_interval=2.0)
+
+    limit.penalise()
+    first = limit.min_interval
+    limit.penalise()
+    second = limit.min_interval
+
+    assert first >= 0.5 and second > first
+    for _ in range(20):
+        limit.penalise()
+    assert limit.min_interval == 2.0, "the backoff has to stop somewhere"
+    for _ in range(50):
+        limit.relax()
+    assert limit.min_interval == 0.2, "the gap was never given back"
+
+
+def test_ingest_stats_carry_the_unknown_counts(tmp_path):
+    from blastradius.pipeline import IngestStats
+
+    stats = IngestStats(seeds=1)
+    stats.downloads_unknown = 3
+    stats.downloads_unknown_examples = ["https://api.npmjs.org/... (HTTP 429 after 3 attempts)"]
+
+    payload = stats.as_dict()
+
+    assert payload["downloads_unknown"] == 3
+    assert payload["downloads_unknown_examples"][0].startswith("https://api.npmjs.org/")

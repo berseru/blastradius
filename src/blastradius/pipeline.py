@@ -20,7 +20,7 @@ from .ids import IdBook
 from .lockfile import Lockfile
 from .npmdata import Fetcher, PackageMeta, ResolvedGraph
 from .osv import Advisory, iter_advisories
-from .typosquat import UNKNOWN_DOWNLOADS, find_typosquats
+from .typosquat import UNKNOWN_DOWNLOADS, candidate_pairs, find_typosquats
 from .versions import is_affected
 
 # HydraDB has no null property value, so "we do not know when this was
@@ -72,6 +72,8 @@ class IngestStats:
     rows_written: int = 0
     fetch_failures: int = 0
     fetch_failure_examples: list[str] = field(default_factory=list)
+    downloads_unknown: int = 0
+    downloads_unknown_examples: list[str] = field(default_factory=list)
     fetch_seconds: float = 0.0
     parse_seconds: float = 0.0
     write_seconds: float = 0.0
@@ -90,6 +92,8 @@ class IngestStats:
             "rows_written": self.rows_written,
             "fetch_failures": self.fetch_failures,
             "fetch_failure_examples": self.fetch_failure_examples,
+            "downloads_unknown": self.downloads_unknown,
+            "downloads_unknown_examples": self.downloads_unknown_examples,
             "fetch_seconds": round(self.fetch_seconds, 2),
             "parse_seconds": round(self.parse_seconds, 2),
             "write_seconds": round(self.write_seconds, 2),
@@ -118,7 +122,13 @@ async def fetch_inputs(
     seeds: list[tuple[str, str]],
     cache_dir: str | Path,
     extra_names: Iterable[str] = (),
-) -> tuple[dict[str, PackageMeta], list[ResolvedGraph], dict[str, int], list[str]]:
+) -> tuple[
+    dict[str, PackageMeta],
+    list[ResolvedGraph],
+    dict[str, int],
+    list[str],
+    list[str],
+]:
     """Resolve the seeds first, then fetch metadata for everything they pull in.
 
     The order matters: the transitive closure is only known after resolution,
@@ -132,11 +142,24 @@ async def fetch_inputs(
         for graph in resolved:
             names.update(name for name, _version in graph.nodes)
         metas = await fetcher.gather_package_meta(sorted(names))
-        downloads = await fetcher.weekly_downloads(sorted(names | set(metas)))
+        # Which popularity numbers actually decide something: the two sides of
+        # every name pair the lookalike test will weigh. Those are fetched
+        # strictly; the rest are a table column (see ``weekly_downloads``).
+        wanted = sorted(names | set(metas))
+        required = {name for pair in candidate_pairs(wanted) for name in pair}
+        downloads = await fetcher.weekly_downloads(wanted, required=required)
         failures = list(fetcher.failures)
+        degraded = list(fetcher.optional_failures)
         if failures:
             print(f"  {len(failures)} fetches failed, e.g. {failures[:3]}", flush=True)
-    return metas, resolved, downloads, failures
+        if degraded:
+            print(
+                f"  {len(degraded)} optional download counts unavailable "
+                f"(popularity unknown, no decision depends on them), "
+                f"e.g. {degraded[:3]}",
+                flush=True,
+            )
+    return metas, resolved, downloads, failures, degraded
 
 
 def build_rows(
@@ -449,7 +472,7 @@ def ingest(
         lock_names |= lock.names()
 
     started = time.perf_counter()
-    metas, resolved, downloads, fetch_failures = asyncio.run(
+    metas, resolved, downloads, fetch_failures, downloads_unknown = asyncio.run(
         fetch_inputs(seeds, cache_dir, lock_names)
     )
     fetch_seconds = time.perf_counter() - started
@@ -472,6 +495,8 @@ def ingest(
     stats.fetch_seconds = fetch_seconds
     stats.fetch_failures = len(fetch_failures)
     stats.fetch_failure_examples = fetch_failures[:5]
+    stats.downloads_unknown = len(downloads_unknown)
+    stats.downloads_unknown_examples = downloads_unknown[:5]
     stats.parse_seconds = parse_seconds
     stats.advisories_scanned = scanned
     print(f"rows to write: {rows.counts()}", flush=True)

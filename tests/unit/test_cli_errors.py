@@ -149,3 +149,37 @@ def test_a_fresh_archive_is_quiet(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "0.0 days old" in out
     assert "WARNING" not in out
+
+
+def test_verify_writes_a_receipt_for_the_work_the_database_did():
+    """"HydraDB was used" has to be a number, not a sentence in a README.
+
+    The client counts every statement it sends and the server time each one
+    took; without this the only evidence in the artifacts is that some rows
+    appeared.
+    """
+    from blastradius.hydra import Result
+
+    class CountingClient:
+        base_url = "http://127.0.0.1:8443"
+        graph = "default"
+        cell = "cell-0"
+
+        def __init__(self) -> None:
+            self.queries_run = 0
+            self.total_query_ms = 0.0
+
+        def run(self, statement, parameters=None):
+            self.queries_run += 1
+            self.total_query_ms += 1.5
+            if "RETURN s.id AS id" in statement:
+                return Result(["id", "name"], [], 0.0)
+            return Result(["total"], [[0]], 0.0)
+
+    client = CountingClient()
+    report = cli.verify(client)
+
+    assert report["hydra"]["queries_run"] == client.queries_run > 0
+    assert report["hydra"]["endpoint"] == "http://127.0.0.1:8443"
+    assert report["hydra"]["graph"] == "default" and report["hydra"]["cell"] == "cell-0"
+    assert report["hydra"]["total_query_ms"] == pytest.approx(client.total_query_ms, abs=0.1)

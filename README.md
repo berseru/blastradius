@@ -302,15 +302,18 @@ stated in `scripts/make_example_lockfiles.py` next to the data itself.
 
 ## What a run actually returns
 
-Every number below was read out of `artifacts/results.json` from one CI run
-(2026-08-14), not written by hand. 134 seed packages expand into the graph the
+Every number below was read out of `artifacts/results.json` and
+`artifacts/ingest.json` of one CI run (2026-08-15, commit `de6f532`), not
+written by hand. The advisory counts move every day, because OSV publishes new
+malicious-package records daily; the graph counts do not, because the seeds are
+pinned. 134 seed packages expand into the graph the
 four example services are measured against:
 
 | | count |
 |---|---|
 | packages / versions | 2,278 / 2,990 |
 | maintainer accounts | 1,036 |
-| advisories kept (of 226,817 scanned) | 130 |
+| advisories kept (of 226,833 scanned) | 130 |
 | `DEPENDS` / `USES` / `MAINTAINS` edges | 6,418 / 861 / 5,280 |
 | `AFFECTS` / `SIMILAR` edges | 180 / 5 |
 
@@ -320,10 +323,10 @@ lead to them:
 
 | service | hits | malicious | unfixable | chains | worst exposure (days) |
 |---|---|---|---|---|---|
-| `checkout-api` | 61 | 0 | 0 | 16 | 2,926.8 |
-| `admin-dashboard` | 46 | 0 | 1 | 12 | 2,591.8 |
-| `data-worker` | 36 | 0 | 0 | 3 | 2,344.8 |
-| `typosquat-incident` | 20 | 5 | 7 | 8 | 2,170.8 |
+| `checkout-api` | 61 | 0 | 0 | 16 | 2,853.5 |
+| `admin-dashboard` | 46 | 0 | 1 | 12 | 2,322.9 |
+| `data-worker` | 36 | 0 | 0 | 3 | 2,159.6 |
+| `typosquat-incident` | 20 | 5 | 7 | 8 | 2,167.5 |
 
 The chains are the product, so here are three verbatim:
 
@@ -361,12 +364,15 @@ every run lists its pairs with both download counts in `artifacts/ingest.json`
 rather than only counting them - a detection nobody can check is a detection
 nobody should trust.
 
-Query latency on that graph, per service, worst case across the four: depth
-profile 1,465 ms, choke points 536 ms, lookalikes 208 ms, blast-radius paths
-46 ms, direct hits 90 ms, exposure windows 50 ms. Ingest wrote 22,174 rows in
-1.94 s; the 226,817-advisory dump was parsed in 10.4 s; `selftest` put all
-24 checks against a live node in 0.15 s, and `serve --selfcheck` drove all 14 API
-checks over HTTP against the same graph.
+Query latency on that graph, worst case across the four services in that run —
+these move with whatever else the shared CI runner is doing, so treat them as an
+order of magnitude, not a benchmark: depth profile 3,163 ms, choke points
+1,119 ms, lookalikes 488 ms, blast-radius paths 108 ms, direct hits 184 ms,
+exposure windows 100 ms. Ingest wrote 22,172 rows in 7.4 s; the
+226,833-advisory dump was parsed in 12.5 s; `selftest` put all 25 checks against
+a live node in 0.16 s, `contract` ran its 14 checks in 7.1 s, `crosscheck`
+re-asked the live OSV API about 24 findings and agreed on 24, and
+`serve --selfcheck` drove all 23 API checks over HTTP against the same graph.
 
 ## Reproducing the numbers
 
@@ -411,10 +417,11 @@ transport error passes against nothing at all.
 ### What happens when a source is unreachable
 
 The registry answers `429` when it is asked too much, and the fetcher retries
-with a backoff. When the retries run out the package is missing from the graph —
-and with it, its versions, its dependencies and its maintainers, which makes
-every chain that would have crossed it disappear. A blast radius that is too
-small reads as safety, so this is not a warning:
+with a backoff — the server's own `Retry-After` when it sends one. When the
+retries run out the package is missing from the graph — and with it, its
+versions, its dependencies and its maintainers, which makes every chain that
+would have crossed it disappear. A blast radius that is too small reads as
+safety, so this is not a warning:
 
 ```
 $ blastradius ingest --seeds 40
@@ -426,6 +433,25 @@ $ echo $?
 
 `--max-fetch-failures` raises that budget deliberately, in the open. The count
 and examples are written into `artifacts/ingest.json` either way.
+
+Not every missing document is that serious, though, and treating them all alike
+failed a real run. npm's download counter cannot be asked about scoped names in
+bulk, so a cold run asks it once per `@scope/name` — hundreds of times — and a
+shared CI address gets rate limited part way through. Failing an entire ingest
+because a popularity number for `@babel/plugin-transform-object-super` was
+throttled is the wrong trade, so counts are split by what depends on them:
+
+* the two sides of every name pair the lookalike test will weigh are
+  **required** — a missing count there changes an answer, so it fails the run;
+* every other count is a column in a table. It is fetched, and if it is
+  throttled anyway the run continues with that package's popularity recorded as
+  unknown (`-1`, never `0`) and the gap reported as `downloads_unknown` in
+  `artifacts/ingest.json` and on stdout.
+
+The pace is negotiated rather than guessed: requests to the counter go one at a
+time, each `429` widens the gap for every request behind it (up to two seconds),
+and each success narrows it again, so a run settles at whatever rate the server
+is willing to serve today.
 
 The OSV snapshot is treated the same way: `ingest` and `stats` print how old the
 cached archive is and say so loudly past a week, because OSV publishes new
