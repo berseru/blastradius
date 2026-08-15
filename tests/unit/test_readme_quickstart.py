@@ -10,11 +10,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ci"))
 
-from readme_quickstart import UI_COMMAND, quickstart_commands, write_runner  # noqa: E402
+from readme_quickstart import (  # noqa: E402
+    UI_COMMAND,
+    quickstart_commands,
+    write_runner,
+)
 
 README = Path(__file__).resolve().parents[2] / "README.md"
 
@@ -47,7 +49,10 @@ def test_no_quickstart_section_extracts_nothing():
 
 def test_the_blocking_ui_command_is_replaced_by_a_probe(tmp_path):
     """`blastradius serve` never returns, so it is started, probed and stopped."""
-    readme = f"## Quickstart\n\n```bash\n{UI_COMMAND}                 # http://127.0.0.1:8080\n```\n\n## Next\n"
+    readme = (
+        f"## Quickstart\n\n```bash\n{UI_COMMAND}"
+        "                 # http://127.0.0.1:8080\n```\n\n## Next\n"
+    )
     commands = quickstart_commands(readme)
     runner, labels = write_runner(commands, tmp_path)
     step = (tmp_path / ".quickstart-steps" / "00.sh").read_text()

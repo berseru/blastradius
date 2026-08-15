@@ -148,9 +148,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
 
 def cmd_contract(args: argparse.Namespace) -> int:
     """Prove the failure paths: refused tokens, wrong graphs, writes that landed."""
-    from .contract import contract_from_env, write_report
-
-    from .contract import DEVIATION
+    from .contract import DEVIATION, contract_from_env, write_report
 
     with client_from_env() as client:
         preflight(client)

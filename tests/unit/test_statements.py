@@ -21,7 +21,7 @@ import re
 import pytest
 
 from blastradius import model, pipeline, queries, selftest
-from blastradius.hydra import MAX_BODY_BYTES, HEALTHCHECK_WRITE, _chunks, check_row
+from blastradius.hydra import HEALTHCHECK_WRITE, MAX_BODY_BYTES, _chunks, check_row
 from blastradius.queries import known_time
 
 ROW_FIELD = re.compile(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)")

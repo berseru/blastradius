@@ -315,7 +315,9 @@ node it ran against. The ecosystem counts come from `blastradius stats`, which
 parses the dump in ~13s into `artifacts/corpus.json`.
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"   # the Quickstart's plain `pip install -e .` is enough to
+                          # run the tool; the tests and the linter live in [dev]
+ruff check src tests ci scripts
 pytest tests/unit -q
 ```
 

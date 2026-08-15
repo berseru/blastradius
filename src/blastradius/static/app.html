@@ -169,7 +169,7 @@ function bars(rows, label, value, max) {
 function chainHtml(chain) {
   const hops = chain.keys.map((key, index) => {
     const cls = index === 0 ? "hop src" : index === chain.keys.length - 1 ? "hop dst" : "hop";
-    return `<span class="${cls} clickable" onclick="showPackage('${esc(key.split('@').slice(0, -1).join('@') || key)}')">${esc(key)}</span>`;
+    return `<span class="${cls} clickable" data-go="package" data-arg="${esc(key.split('@').slice(0, -1).join('@') || key)}">${esc(key)}</span>`;
   });
   return `<div class="chain">${hops.join('<span class="arrow">→</span>')}</div>`;
 }
@@ -189,7 +189,7 @@ async function boot() {
       `${num(g.Pkg)} packages · ${num(g.Ver)} versions · ${num(g.DEPENDS)} depends · ${num(g.Adv)} advisories · ${num(g.SIMILAR)} lookalikes`;
     const { services } = await api("/api/services");
     $("services").innerHTML = services.map((service) => `
-      <button class="svc" id="svc-${esc(service.service)}" onclick="showService('${esc(service.service)}')">
+      <button class="svc" id="svc-${esc(service.service)}" data-go="service" data-arg="${esc(service.service)}">
         <span class="name">${esc(service.service)}</span>
         <div class="row">
           <span><b>${num(service.pinned_versions)}</b> pins</span>
@@ -231,9 +231,9 @@ async function showService(name) {
         <div class="block"><h2>Names impersonating a popular package</h2>
           ${data.lookalikes.length ? data.lookalikes.map((row) => `
             <div class="look">
-              <span><span class="s clickable" onclick="showPackage('${esc(row.suspect)}')">${esc(row.suspect)}</span>
+              <span><span class="s clickable" data-go="package" data-arg="${esc(row.suspect)}">${esc(row.suspect)}</span>
                 <span class="arrow">looks like</span>
-                <span class="t clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</span></span>
+                <span class="t clickable" data-go="package" data-arg="${esc(row.looks_like)}">${esc(row.looks_like)}</span></span>
               <span class="v" style="color:var(--muted)">${num(row.suspect_downloads)} vs ${num(row.target_downloads)} weekly</span>
             </div>`).join("") : '<p class="empty">no lookalike names in this tree</p>'}
         </div>
@@ -243,7 +243,7 @@ async function showService(name) {
           <th>version</th><th>advisory</th><th>kind</th><th>severity</th><th>fix</th><th>disclosed</th><th>pin</th>
         </tr></thead><tbody>
         ${data.hits.map((hit) => `<tr>
-          <td class="clickable" onclick="showPackage('${esc(hit.version.split("@").slice(0, -1).join("@"))}')">${esc(hit.version)}</td>
+          <td class="clickable" data-go="package" data-arg="${esc(hit.version.split("@").slice(0, -1).join("@"))}">${esc(hit.version)}</td>
           <td>${esc(hit.advisory)}</td>
           <td class="kind-${esc(hit.kind)}">${esc(hit.kind)}</td>
           <td>${esc(hit.severity)}</td>
@@ -286,10 +286,10 @@ async function showPackage(name) {
               : '<p class="empty">no chain into an example service</p>'}</div></div>
         <div class="block"><h2>Who can publish it</h2>
           ${data.maintainers.length ? data.maintainers.map((row) => `<div class="look">
-            <span class="clickable" onclick="showMaintainer('${esc(row.login)}')">${esc(row.login)}</span>
+            <span class="clickable" data-go="maintainer" data-arg="${esc(row.login)}">${esc(row.login)}</span>
             <span style="color:var(--muted)">${row.package_count > 0 ? num(row.package_count) + " packages here" : "npm account"}</span></div>`).join("") : '<p class="empty">no maintainer recorded</p>'}
           ${data.lookalikes.length ? `<h2 style="margin-top:16px">Impersonates</h2>${data.lookalikes.map((row) => `<div class="look">
-            <span class="t clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</span>
+            <span class="t clickable" data-go="package" data-arg="${esc(row.looks_like)}">${esc(row.looks_like)}</span>
             <span style="color:var(--muted)">distance ${esc(row.distance)} · ${num(row.target_downloads)} weekly</span></div>`).join("")}` : ""}
         </div>
       </div>
@@ -303,7 +303,7 @@ async function showPackage(name) {
           </tbody></table></div></div>
         <div class="block"><h2>Pinned by</h2><div class="scroll"><table><thead><tr>
             <th>service</th><th>version</th><th>pin</th></tr></thead><tbody>
-            ${data.shipped_by.map((row) => `<tr><td class="clickable" onclick="showService('${esc(row.service)}')">${esc(row.service)}</td>
+            ${data.shipped_by.map((row) => `<tr><td class="clickable" data-go="service" data-arg="${esc(row.service)}">${esc(row.service)}</td>
               <td>${esc(row.version)}</td><td>${row.direct ? "direct" : "transitive"}${row.dev ? " · dev" : ""}</td></tr>`).join("")
               || '<tr><td colspan="3" class="empty">not pinned by any example service</td></tr>'}
           </tbody></table></div></div>
@@ -331,8 +331,8 @@ async function showMaintainer(login) {
       <div class="block"><h2>What one compromised account would touch</h2>
         <div class="scroll"><table><thead><tr><th>service</th><th>package</th><th>version</th><th>pin</th></tr></thead><tbody>
           ${data.reach.map((row) => `<tr>
-            <td class="clickable" onclick="showService('${esc(row.service)}')">${esc(row.service)}</td>
-            <td class="clickable" onclick="showPackage('${esc(row.package)}')">${esc(row.package)}</td>
+            <td class="clickable" data-go="service" data-arg="${esc(row.service)}">${esc(row.service)}</td>
+            <td class="clickable" data-go="package" data-arg="${esc(row.package)}">${esc(row.package)}</td>
             <td>${esc(row.version)}</td><td>${row.direct ? "direct" : "transitive"}</td></tr>`).join("")
             || '<tr><td colspan="4" class="empty">no reach into the example services</td></tr>'}
         </tbody></table></div></div>
@@ -352,9 +352,9 @@ async function showLookalikes() {
       <div class="block" style="margin-top:18px"><h2>One edit apart, and one is far more installed</h2>
         <table><thead><tr><th>suspect</th><th>weekly</th><th>impersonates</th><th>weekly</th><th>distance</th><th>ratio</th></tr></thead><tbody>
         ${data.lookalikes.map((row) => `<tr>
-          <td class="kind-malicious clickable" onclick="showPackage('${esc(row.suspect)}')">${esc(row.suspect)}</td>
+          <td class="kind-malicious clickable" data-go="package" data-arg="${esc(row.suspect)}">${esc(row.suspect)}</td>
           <td>${num(row.suspect_downloads)}</td>
-          <td class="clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</td>
+          <td class="clickable" data-go="package" data-arg="${esc(row.looks_like)}">${esc(row.looks_like)}</td>
           <td>${num(row.target_downloads)}</td>
           <td>${esc(row.distance)}</td>
           <td>${Number(row.downloads_ratio).toExponential(1)}</td></tr>`).join("")
@@ -376,10 +376,10 @@ $("q").addEventListener("input", (event) => {
     try {
       const data = await api(`/api/search?q=${encodeURIComponent(prefix)}`);
       const packages = data.packages.map((row) => `
-        <button onclick="showPackage('${esc(row.name)}')"><span>${esc(row.name)}</span>
+        <button data-go="package" data-arg="${esc(row.name)}"><span>${esc(row.name)}</span>
           <span class="meta">${num(row.downloads)} weekly</span></button>`);
       const maintainers = data.maintainers.map((row) => `
-        <button onclick="showMaintainer('${esc(row.login)}')"><span>${esc(row.login)}</span>
+        <button data-go="maintainer" data-arg="${esc(row.login)}"><span>${esc(row.login)}</span>
           <span class="meta">maintainer</span></button>`);
       $("results").innerHTML = packages.concat(maintainers).join("")
         || '<p class="empty" style="padding:6px 8px">nothing with that prefix</p>';
@@ -387,6 +387,20 @@ $("q").addEventListener("input", (event) => {
       $("results").innerHTML = `<p class="empty" style="padding:6px 8px">${esc(error.message)}</p>`;
     }
   }, 140);
+});
+
+// One delegated listener instead of an onclick attribute per cell. An attribute
+// value is HTML first and JavaScript second: the parser decodes &#39; back into
+// a quote before the handler is compiled, so HTML-escaping a name into
+// onclick="showPackage('...')" is the wrong encoding for that sink, and a
+// package name carrying a quote would break out of the string. A data attribute
+// is only ever read back as text, so there is no JavaScript layer to escape for.
+const ROUTES = { package: showPackage, service: showService, maintainer: showMaintainer };
+document.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-go]");
+  if (!target) return;
+  const go = ROUTES[target.dataset.go];
+  if (go) go(target.dataset.arg);
 });
 
 boot();

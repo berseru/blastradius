@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import model, queries
-from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN
 from .hydra import HydraClient, HydraError, check_row
+from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN
 
 # Real ids are 62-bit blake2b digests, so these single digits cannot collide
 # with ingested data. They are deleted at the end of a run regardless.

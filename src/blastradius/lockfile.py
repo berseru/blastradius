@@ -294,7 +294,7 @@ def parse_lockfile(
         walk(document.get("dependencies") or {}, 0, [])
 
         nested_levels: dict[str, dict[str, Pin]] = {}
-        for pin, entry, scope in pending:
+        for pin, entry, _scope in pending:
             nested_levels[pin.key] = {
                 child_name: pins[f"{child_name}@{child['version']}"]
                 for child_name, child in (entry.get("dependencies") or {}).items()
@@ -354,11 +354,17 @@ def _captured_at(document: dict, path: Path | None) -> int | None:
     stated = document.get(CAPTURED_AT_FIELD)
     if isinstance(stated, str) and stated:
         try:
-            return int(datetime.fromisoformat(
-                stated.replace("Z", "+00:00")
-            ).replace(tzinfo=timezone.utc).timestamp())
+            parsed = datetime.fromisoformat(stated.replace("Z", "+00:00"))
         except ValueError:
-            pass
+            parsed = None
+        if parsed is not None:
+            # UTC is the fallback for a naive timestamp, never an override for a
+            # stated one: replacing a real +05:00 offset with UTC would keep the
+            # wall clock and move the instant, and this field is what every
+            # "were you shipping it while it was live" answer is measured from.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
     if isinstance(stated, int) and not isinstance(stated, bool):
         return stated
     return git_commit_time(path) if path is not None else None

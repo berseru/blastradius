@@ -215,11 +215,19 @@ def exposed_services(
     services = sorted({row["service"] for row in rows})
     unexplained = [row for row in rows if row["depth"] is None]
     if rows:
-        deepest = max((row["depth"] for row in rows if row["depth"] is not None), default=0)
+        depths = [row["depth"] for row in rows if row["depth"] is not None]
         summary = (
             f"{len(services)} service(s) exposed: {', '.join(services)}"
-            f" — {len(rows)} pinned version(s), reached at up to {deepest} hop(s)"
+            f" — {len(rows)} pinned version(s)"
         )
+        # "up to 0 hops" reads as "all of them are direct dependencies", so it is
+        # only ever printed when a chain actually resolved to that depth. With no
+        # resolved depth at all there is no number to report, and saying so is
+        # the honest answer.
+        if depths:
+            summary += f", reached at up to {max(depths)} hop(s)"
+        else:
+            summary += ", hop depth unknown for all of them"
         if unexplained:
             # Honest about the limit rather than quietly calling them direct:
             # the lockfile proves they ship it, the graph has no chain within
@@ -268,7 +276,8 @@ def offending_versions(client: HydraClient, package: str) -> tuple[Answer, list[
         entry["affected_in_graph"] = len(affected)
         entry["first_affected_version"] = first
         entry["first_affected_published"] = _iso(published.get(first)) if first else None
-        entry["fix_published"] = _iso(published.get(f"{package}@{entry['fixed']}")) if entry["fixed"] else None
+        fixed_key = f"{package}@{entry['fixed']}" if entry["fixed"] else None
+        entry["fix_published"] = _iso(published.get(fixed_key)) if fixed_key else None
         rows.append(entry)
     rows.sort(key=lambda row: (row["kind"] != "malicious", row["advisory"]))
     if rows:

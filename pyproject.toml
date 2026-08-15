@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -30,3 +31,14 @@ packages = ["src/blastradius"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+# zip(..., strict=) is not the point of this codebase's zips: the pairs it walks
+# are built together a line or two above, so the check is noise here.
+ignore = ["B905"]

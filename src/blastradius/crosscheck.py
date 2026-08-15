@@ -42,6 +42,21 @@ def parse_version(text: str) -> tuple[list[int], str]:
     return numbers, prerelease
 
 
+def _prerelease_key(prerelease: str) -> list[tuple[int, int, str]]:
+    """SemVer §11 precedence: dot-separated identifiers, numeric ones compared as
+    numbers and always below alphanumeric ones. Comparing the raw strings instead
+    would order ``1.0.0-9`` above ``1.0.0-10``, and this comparator exists to
+    disagree with the pipeline when the pipeline is wrong, not to invent its own
+    wrong answers."""
+    key: list[tuple[int, int, str]] = []
+    for identifier in prerelease.split("."):
+        if identifier.isdigit():
+            key.append((0, int(identifier), ""))
+        else:
+            key.append((1, 0, identifier))
+    return key
+
+
 def compare(left: str, right: str) -> int:
     (left_numbers, left_pre), (right_numbers, right_pre) = parse_version(left), parse_version(right)
     if left_numbers != right_numbers:
@@ -52,7 +67,10 @@ def compare(left: str, right: str) -> int:
         return 1
     if not right_pre:
         return -1
-    return -1 if left_pre < right_pre else 1
+    left_key, right_key = _prerelease_key(left_pre), _prerelease_key(right_pre)
+    if left_key == right_key:
+        return 0
+    return -1 if left_key < right_key else 1
 
 
 def osv_affects(record: dict, name: str, version: str) -> tuple[bool, str]:
