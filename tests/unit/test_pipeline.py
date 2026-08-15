@@ -195,6 +195,21 @@ class TestBuildRows:
         assert len(rows.buckets["depends"]) == 1
         assert rows.buckets["depends"][0]["direct"] is True
 
+    def test_a_maintainer_carries_the_number_of_packages_it_can_publish(self):
+        """A published 0 would read as "this account owns nothing"."""
+        seeds, metas, resolved, advisories, lockfiles = self._inputs()
+        metas["accepts"].maintainers = ["dougwilson"]
+        rows, _stats, book = build_rows(seeds, metas, resolved, advisories, lockfiles)
+        counts = {row["login"]: row["package_count"] for row in rows.buckets["maintainers"]}
+        assert counts == {"dougwilson": 2}
+
+    def test_a_maintainer_row_is_written_once_with_the_final_count(self):
+        seeds, metas, resolved, advisories, lockfiles = self._inputs()
+        metas["accepts"].maintainers = ["dougwilson"]
+        rows, _stats, _book = build_rows(seeds, metas, resolved, advisories, lockfiles)
+        assert len(rows.buckets["maintainers"]) == 1
+        assert len(rows.buckets["maintains"]) == 2
+
     def test_download_counts_reach_the_package_rows(self):
         seeds, metas, resolved, advisories, lockfiles = self._inputs()
         rows, _stats, _book = build_rows(

@@ -287,7 +287,7 @@ async function showPackage(name) {
         <div class="block"><h2>Who can publish it</h2>
           ${data.maintainers.length ? data.maintainers.map((row) => `<div class="look">
             <span class="clickable" onclick="showMaintainer('${esc(row.login)}')">${esc(row.login)}</span>
-            <span style="color:var(--muted)">${row.package_count > 0 ? num(row.package_count) + " packages" : "npm account"}</span></div>`).join("") : '<p class="empty">no maintainer recorded</p>'}
+            <span style="color:var(--muted)">${row.package_count > 0 ? num(row.package_count) + " packages here" : "npm account"}</span></div>`).join("") : '<p class="empty">no maintainer recorded</p>'}
           ${data.lookalikes.length ? `<h2 style="margin-top:16px">Impersonates</h2>${data.lookalikes.map((row) => `<div class="look">
             <span class="t clickable" onclick="showPackage('${esc(row.looks_like)}')">${esc(row.looks_like)}</span>
             <span style="color:var(--muted)">distance ${esc(row.distance)} · ${num(row.target_downloads)} weekly</span></div>`).join("")}` : ""}

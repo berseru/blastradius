@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -226,6 +226,8 @@ def build_rows(
         for login in meta.maintainers if meta else []:
             maintainer_id = book.maintainer(login)
             rows.add("maintainers", {"id": maintainer_id, "login": login, "package_count": 0})
+            # `package_count` is filled in below, once every MAINTAINS edge of
+            # this run is known.
             rows.add(
                 "maintains",
                 {
@@ -235,6 +237,14 @@ def build_rows(
                     "login": login,
                 },
             )
+
+    # An account's blast radius is how much it can publish to, so the number is
+    # worth carrying on the vertex. It counts the packages *this graph* holds,
+    # not the account's npm total, which nothing here fetches - a placeholder 0
+    # on an account that publishes 156 packages reads as an innocent account.
+    per_login = Counter(row["maintainer_id"] for row in rows.buckets["maintains"])
+    for row in rows.buckets["maintainers"]:
+        row["package_count"] = per_login[row["id"]]
 
     stats.packages = len(rows.buckets["packages"])
     stats.versions = len(rows.buckets["versions"])

@@ -361,7 +361,7 @@ def shared_maintainers(client: HydraClient, package: str) -> Answer:
     for row in rows:
         entry = by_login.setdefault(
             row["login"],
-            {"login": row["login"], "packages_in_graph": [], "packages_on_npm": row.get("package_count")},
+            {"login": row["login"], "packages_in_graph": [], "package_count": row.get("package_count")},
         )
         if row["package"] != package:
             entry["packages_in_graph"].append(row["package"])
@@ -376,7 +376,7 @@ def shared_maintainers(client: HydraClient, package: str) -> Answer:
             "login": entry["login"],
             "also_publishes_in_graph": len(others),
             "examples": others[:6],
-            "packages_on_npm": entry["packages_on_npm"],
+            "packages_in_graph_total": entry["package_count"],
             "services_reachable": sorted({row["service"] for row in reach}),
         })
     if out:
