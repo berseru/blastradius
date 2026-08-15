@@ -46,8 +46,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN
 from .hydra import HydraClient, Path, paths_from
+from .limits import CHAIN_MAX_LEN, DEPTH_MAX_LEN
 
 # --------------------------------------------------------------------------
 # 1. Direct hits: which pinned versions are named by an advisory?
@@ -285,8 +285,12 @@ SAFE_KEY = re.compile(r"^[A-Za-z0-9@/._~+-]+$")
 
 def key_list_literal(values: Sequence[str]) -> tuple[str, list[str]]:
     """Render ``['a@1.0.0', 'b@2.0.0']`` from safe keys, plus what was refused."""
-    safe = [value for value in values if SAFE_KEY.match(value or "")]
-    refused = [value for value in values if value not in set(safe)]
+    # Deduplicated on both sides: a repeated key adds nothing to a path search
+    # and only inflates the query text, and a repeated refusal would be counted
+    # twice in the report that tells a reader what was left out.
+    unique = list(dict.fromkeys(values))
+    safe = [value for value in unique if SAFE_KEY.match(value or "")]
+    refused = [value for value in unique if value not in set(safe)]
     return "[" + ", ".join(f"'{value}'" for value in safe) + "]", refused
 
 

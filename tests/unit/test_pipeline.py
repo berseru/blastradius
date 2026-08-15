@@ -5,8 +5,8 @@ import pytest
 from blastradius.lockfile import Edge, Lockfile, Pin
 from blastradius.npmdata import PackageMeta, ResolvedGraph
 from blastradius.osv import Advisory, Affected, AffectedRange
-from blastradius.typosquat import UNKNOWN_DOWNLOADS
 from blastradius.pipeline import Rows, build_rows, match_versions, read_seeds
+from blastradius.typosquat import UNKNOWN_DOWNLOADS
 
 
 def advisory(osv_id, kind, package, ranges=(), versions=()):

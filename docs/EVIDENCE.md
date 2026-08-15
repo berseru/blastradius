@@ -157,3 +157,36 @@ defaulting to something reassuring:
   version;
 * every truncated list is reported as truncated, with the limits living in one
   place (`src/blastradius/limits.py`) so the UI and the CLI cannot drift apart.
+* an exposure whose chain the graph cannot explain within the hop limit is
+  reported as unexplained with no depth, never as "reached at up to 0 hops",
+  which would read as a direct dependency.
+
+## What review rounds changed
+
+The suite carries one file per review round, each test named for the wrong
+answer it prevents rather than for the function it calls:
+
+* `tests/unit/test_review_regressions.py` — withdrawn advisories were not
+  skipped, versions were sorted lexicographically (`1.10.0` below `1.9.0`), a
+  missing disclosure date raised instead of reading as unknown, and an npm
+  `Retry-After` could stall an ingest for minutes.
+* `tests/unit/test_accuracy_regressions.py` — verdicts stated more confidently
+  than the graph supported, requirement-blind child resolution in lockfile v1
+  trees, crosscheck counters that mixed "unreachable" into "disagreed", and
+  traversal limits scattered as magic numbers.
+* `tests/unit/test_round3_regressions.py` — a stated non-UTC capture time was
+  relabelled as UTC instead of converted (moving every "were you shipping it
+  while it was live" answer by the offset), the exposure summary claimed
+  "0 hop(s)" when no depth was known, the independent semver comparator ordered
+  `1.0.0-9` above `1.0.0-10`, and the UI built click handlers by interpolating
+  names into `onclick` attributes — HTML escaping applied to what the parser
+  then hands to JavaScript, so values now travel in data attributes read back as
+  text by one delegated listener.
+* `tests/unit/test_selftest.py` — the module CI runs first had no offline
+  coverage: a rejected statement is now proven to be recorded with the server's
+  own code rather than raised, a read that answers nothing is proven to be a
+  failure rather than a pass, and the fixture is proven to be deleted even after
+  a failed check.
+
+`ci/unit.sh` runs `ruff check` before the suite, so style and dead-import drift
+fails the build instead of the reader's attention.

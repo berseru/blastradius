@@ -20,7 +20,6 @@ from functools import lru_cache
 
 import nodesemver as node_semver
 
-
 # node-semver's Python port takes ``loose`` as a required positional argument
 # on some entry points and as a keyword on others; every call site below passes
 # it explicitly so a signature mismatch fails loudly instead of being swallowed

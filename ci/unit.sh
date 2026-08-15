@@ -6,4 +6,7 @@ cd "$(dirname "$0")/.."
 source ci/lib.sh
 
 install_project
+# Lint first: it takes a second and it fails on the kind of thing a reviewer
+# would otherwise spend their attention on instead of the answers.
+ruff check src tests ci scripts
 pytest -q tests/unit
