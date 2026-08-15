@@ -346,3 +346,63 @@ def test_ingest_stats_carry_the_unknown_counts(tmp_path):
 
     assert payload["downloads_unknown"] == 3
     assert payload["downloads_unknown_examples"][0].startswith("https://api.npmjs.org/")
+
+
+# -- deps.dev labels for bundled dependencies --------------------------------
+#
+# Found by the scale run: at 300 seeds `aws-cdk-lib` enters the graph, and
+# deps.dev names its bundled copies after the path they live at
+# ("aws-cdk-lib>2.189.1>@balena/dockerignore"). Treated as a package name, that
+# label made the registry answer 405, and inside a bulk downloads batch it made
+# the counter answer 400 for all 64 names travelling with it - which failed the
+# whole ingest on an integrity gate that was, correctly, set to zero.
+
+
+def test_a_bundled_dependency_label_resolves_to_the_real_package():
+    assert (
+        npmdata.normalize_package_name("aws-cdk-lib>2.189.1>@balena/dockerignore")
+        == "@balena/dockerignore"
+    )
+    assert npmdata.normalize_package_name("aws-cdk-lib>2.189.1>ajv") == "ajv"
+    assert npmdata.normalize_package_name("axios") == "axios"
+    assert npmdata.normalize_package_name("@types/node") == "@types/node"
+
+
+def test_an_unusable_name_never_travels_in_a_downloads_batch(counter, tmp_path):
+    """One bad name must not cost the 64 good ones sharing its request."""
+    seen: list[str] = []
+
+    def handler(path):
+        seen.append(path)
+        tail = path.rsplit("/", 1)[-1]
+        if ">" in tail or "%3E" in tail:
+            return 400, {"error": "bad request"}
+        return 200, {"downloads": 7, "package": "axios"}
+
+    counter(handler)
+
+    counts, failures, degraded = downloads(
+        tmp_path, ["axios", "aws-cdk-lib>2.189.1>ajv"]
+    )
+
+    assert counts == {"axios": 7}
+    assert failures == [] and degraded == []
+    assert all(">" not in path and "%3E" not in path for path in seen)
+
+
+def test_the_registry_is_never_asked_for_a_bundled_label(registry, tmp_path):
+    asked: list[str] = []
+
+    def handler(path):
+        asked.append(path)
+        return 405, {"error": "method not allowed"}
+
+    registry(handler)
+
+    meta, failures, _hits, _misses = fetch(
+        tmp_path, name="aws-cdk-lib>2.189.1>@balena/dockerignore"
+    )
+
+    assert meta is None
+    assert asked == [], "an unusable name was still fetched"
+    assert failures == [], "a name we chose not to ask about was charged as a failure"

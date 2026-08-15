@@ -22,6 +22,7 @@ import asyncio
 import gzip
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -34,6 +35,25 @@ REGISTRY_URL = "https://registry.npmjs.org"
 DOWNLOADS_URL = "https://api.npmjs.org/downloads/point/last-week"
 DEPSDEV_URL = "https://api.deps.dev/v3alpha"
 USER_AGENT = "blastradius/0.1 (+https://github.com/blastradius)"
+
+#: A publishable npm name: an optional ``@scope/`` then the package itself,
+#: both restricted to the characters npm actually allows.
+NPM_NAME = re.compile(r"^(?:@[A-Za-z0-9\-._~]+/)?[A-Za-z0-9\-._~]+$")
+
+
+def normalize_package_name(name: str) -> str:
+    """The real npm name behind a deps.dev node label.
+
+    deps.dev names a *bundled* dependency after the path it was found at -
+    ``aws-cdk-lib>2.189.1>@balena/dockerignore`` is the vendored copy of
+    ``@balena/dockerignore`` shipped inside ``aws-cdk-lib``. The bundled copy is
+    the same published package, so the last segment is the name that belongs in
+    the graph; keeping the label instead means a node nothing can ever match, a
+    registry fetch that answers 405, and - because one unusable name travels in
+    a batch of 64 - a download request that answers 400 for 63 innocent
+    packages as well.
+    """
+    return name.rsplit(">", 1)[-1] if ">" in name else name
 
 
 class HostLimit:
@@ -316,6 +336,8 @@ class Fetcher:
     # -- sources -----------------------------------------------------------
 
     async def package_meta(self, name: str) -> PackageMeta | None:
+        if not NPM_NAME.match(name):
+            return None
         document = await self._get_json(f"{REGISTRY_URL}/{name}", "registry", name)
         if not document:
             return None
@@ -353,7 +375,9 @@ class Fetcher:
         nodes: list[tuple[str, str]] = []
         for node in document.get("nodes") or []:
             key = node.get("versionKey") or {}
-            nodes.append((key.get("name", ""), key.get("version", "")))
+            nodes.append(
+                (normalize_package_name(key.get("name", "")), key.get("version", ""))
+            )
         edges: list[tuple[int, int, str]] = []
         for edge in document.get("edges") or []:
             edges.append(
@@ -383,7 +407,9 @@ class Fetcher:
         column in a table: worth asking for, not worth failing over, because the
         one-at-a-time scoped requests are exactly what a rate limit hits first.
         """
-        unique = sorted({name for name in names if name})
+        # A name the counter cannot possibly know is not worth asking about, and
+        # in a bulk batch it costs the whole batch, not just itself.
+        unique = sorted({name for name in names if name and NPM_NAME.match(name)})
         needed = set(required)
         scoped = [name for name in unique if name.startswith("@")]
         plain = [name for name in unique if not name.startswith("@")]
