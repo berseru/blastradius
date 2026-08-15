@@ -13,20 +13,22 @@ Built for Hack Hydra (Track 2 — repos, dependencies and code as graphs) on
 Every dependency scanner ends its report the same way: *upgrade to the fixed
 version*. For the npm ecosystem that advice is now mostly fiction.
 
-Numbers from the OSV npm dump of 2026-08-14, counted by this project's own
-parser — run `blastradius stats` to re-derive them, no database required:
+Numbers from the OSV npm dump, counted by this project's own parser. CI re-derives
+them on every run into `artifacts/corpus.json`; these are from the run of
+2026-08-15, covering advisories published between 2017-10-24 and 2026-08-14:
 
 | | count | share |
 |---|---|---|
-| advisories in the dump | 226,798 | 100% |
-| `MAL-*` malicious-package records | 219,644 | 96.8% |
+| advisories in the dump | 226,833 | 100% |
+| `MAL-*` malicious-package records | 219,676 | 96.8% |
 | ...of those, ones offering a fixed version | **26** | 0.01% |
-| `GHSA-*` vulnerabilities | 7,154 | 3.2% |
+| `GHSA-*` vulnerabilities | 7,157 | 3.2% |
 | ...of those, ones with no fix available | 1,659 | 23% |
 
-OSV publishes new malicious-package records daily, so a run tomorrow returns
-slightly larger totals. That is why the command is in the repo rather than the
-number being pasted into it.
+OSV publishes new malicious-package records daily — the day before this run the
+same command counted 226,798 — so the totals move. That is why `blastradius
+stats` is in the repo and runs in CI, rather than a number being pasted into this
+file and quietly going stale.
 
 When a package is malicious there is nothing to upgrade to. The only useful
 questions are *what did it reach*, *how*, and *for how long* — and those are
