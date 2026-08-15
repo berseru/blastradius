@@ -160,12 +160,14 @@ def base_url():
         server.server_close()
 
 
-def get(url: str) -> tuple[int, dict]:
+def get(url: str, method: str = "GET") -> tuple[int, dict]:
     import urllib.error
 
+    request = urllib.request.Request(url, method=method)
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            return response.status, json.loads(response.read())
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read()
+            return response.status, json.loads(body) if body else {}
     except urllib.error.HTTPError as error:
         return error.code, json.loads(error.read() or b"{}")
 
@@ -261,6 +263,30 @@ class TestOverHttp:
     def test_an_unknown_route_is_a_404_with_a_reason(self, base_url):
         status, body = get(f"{base_url}/api/nope")
         assert status == 404 and body["error"]
+
+    def test_a_wrong_name_is_a_404_and_never_an_empty_page(self, base_url):
+        """The dangerous answer is 200 with nothing in it: on this UI that reads
+        as "no exposure found" when the truth is "that service does not exist"."""
+        for path in ("/api/services/ghost", "/api/packages/ghost", "/api/maintainers/ghost"):
+            status, body = get(f"{base_url}{path}")
+            assert status == 404, f"{path} answered {status}"
+            assert body["error"], f"{path} gave a 404 with no reason"
+
+    def test_a_bad_limit_is_the_callers_400_not_the_servers_500(self, base_url):
+        for query in ("limit=banana", "limit=0", "limit=-3"):
+            status, body = get(f"{base_url}/api/search?q=ex&{query}")
+            assert status == 400, f"{query} answered {status}"
+            assert "limit" in body["error"]
+
+    def test_a_huge_limit_is_capped_rather_than_refused(self, base_url):
+        status, _ = get(f"{base_url}/api/search?q=ex&limit=100000")
+        assert status == 200
+
+    def test_the_api_refuses_every_verb_that_would_write(self, base_url):
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            status, body = get(f"{base_url}/api/services", method=method)
+            assert status == 405, f"{method} answered {status}"
+            assert body["error"] == "this API is read-only"
 
     def test_the_ci_selfcheck_passes_against_a_populated_graph(self, base_url):
         report = api_selfcheck(base_url)

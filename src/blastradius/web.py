@@ -45,6 +45,15 @@ class NotFound(Exception):
     """A name that is not in the graph, answered as 404 rather than as empty."""
 
 
+class BadRequest(Exception):
+    """A request the caller got wrong, answered as 400 rather than as a crash.
+
+    Caller error and server error are different things, and a 500 for a
+    mistyped query string tells the caller to file a bug when the fix is to
+    retype the URL.
+    """
+
+
 @dataclass
 class Api:
     """The question-answering layer. Holds no state beyond one client.
@@ -165,7 +174,14 @@ class Api:
         prefix = (query.get("q") or "").strip()
         if not prefix:
             return {"packages": [], "maintainers": []}
-        limit = min(int(query.get("limit") or SEARCH_LIMIT), 100)
+        raw_limit = query.get("limit") or SEARCH_LIMIT
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            raise BadRequest(f"limit must be a whole number, got {raw_limit!r}") from None
+        if limit < 1:
+            raise BadRequest(f"limit must be at least 1, got {limit}")
+        limit = min(limit, 100)
         packages = self.run(queries.PACKAGE_SEARCH, {"prefix": prefix, "limit": limit})
         maintainers = self.run(queries.MAINTAINER_SEARCH, {"prefix": prefix, "limit": limit})
         return {"packages": packages, "maintainers": maintainers}
@@ -319,10 +335,25 @@ def make_handler(api: Api) -> type[BaseHTTPRequestHandler]:
                 self._json(200, handler(captured, query))
             except NotFound as error:
                 self._json(404, {"error": str(error)})
+            except BadRequest as error:
+                self._json(400, {"error": str(error)})
             except HydraError as error:
                 self._json(502, {"error": str(error)[:400], "code": error.code})
             except Exception as error:  # pragma: no cover - defensive
                 self._json(500, {"error": f"{type(error).__name__}: {error}"[:400]})
+
+        def _read_only(self) -> None:
+            """Every route is a read; say so explicitly instead of 501.
+
+            The API is stated to be read-only, and a claim in a README is worth
+            less than a server that refuses the verb.
+            """
+            self._json(405, {"error": "this API is read-only", "allow": "GET"})
+
+        do_POST = _read_only  # noqa: N815 - stdlib naming
+        do_PUT = _read_only  # noqa: N815
+        do_PATCH = _read_only  # noqa: N815
+        do_DELETE = _read_only  # noqa: N815
 
     return RequestHandler
 

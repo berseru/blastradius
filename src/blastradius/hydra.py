@@ -159,14 +159,18 @@ class HydraClient:
         self.base_url = base_url.rstrip("/")
         self.graph = graph
         self.cell = cell
-        self._client = httpx.Client(
-            timeout=timeout,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "X-Graph-Namespace": namespace,
-                "Content-Type": "application/json",
-            },
-        )
+        # An empty token is sent as *no* header rather than as ``Bearer `` with a
+        # trailing space: httpx refuses that value outright, and the resulting
+        # LocalProtocolError blames the client library for what is really a
+        # missing HYDRA_TOKEN. Without the header the server answers 401, which
+        # is the truth and says so.
+        headers = {
+            "X-Graph-Namespace": namespace,
+            "Content-Type": "application/json",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        self._client = httpx.Client(timeout=timeout, headers=headers)
         self.queries_run = 0
         self.total_query_ms = 0.0
 

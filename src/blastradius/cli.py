@@ -1,4 +1,4 @@
-"""Command line entry point: ``wait``, ``selftest``, ``ingest``, ``verify``, ``serve``, ``ask``.
+"""Command line entry point: ``wait``, ``selftest``, ``contract``, ``ingest``, ``verify``, ``serve``, ``ask``.
 
 CI runs the first four in order. ``selftest`` proves every statement against a
 real node on an 11-vertex fixture in seconds, so an unsupported query is caught
@@ -86,6 +86,24 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     if report.failures:
         print(
             f"{len(report.failures)} of {len(report.checks)} checks failed",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def cmd_contract(args: argparse.Namespace) -> int:
+    """Prove the failure paths: refused tokens, wrong graphs, writes that landed."""
+    from .contract import contract_from_env, write_report
+
+    report = contract_from_env()
+    print(report.render(), flush=True)
+    if args.out:
+        write_report(report, args.out)
+    if report.failures:
+        print(
+            f"{len(report.failures)} contract checks failed: "
+            f"{[check.name for check in report.failures]}",
             file=sys.stderr,
         )
         return 1
@@ -273,18 +291,26 @@ def api_selfcheck(base: str, dump_dir: Path | None = None) -> dict:
     """
     import urllib.error
 
-    def get(path: str) -> tuple[int, Any]:
+    def get(path: str, method: str = "GET") -> tuple[int, Any]:
+        request = urllib.request.Request(f"{base}{path}", method=method)
         try:
-            with urllib.request.urlopen(f"{base}{path}", timeout=120) as response:
-                return response.status, json.loads(response.read())
+            with urllib.request.urlopen(request, timeout=120) as response:
+                body = response.read()
+                return response.status, json.loads(body) if body else {}
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read() or b"{}")
+            raw = error.read() or b"{}"
+            try:
+                return error.code, json.loads(raw)
+            except json.JSONDecodeError:
+                return error.code, {"body": raw[:200].decode("utf-8", "replace")}
 
     checks: list[dict] = []
 
-    def check(route: str, predicate: Callable[[int, Any], bool], note: str = "") -> Any:
+    def check(
+        route: str, predicate: Callable[[int, Any], bool], note: str = "", method: str = "GET"
+    ) -> Any:
         started = time.perf_counter()
-        status, payload = get(route)
+        status, payload = get(route, method)
         elapsed = (time.perf_counter() - started) * 1000
         try:
             ok = bool(predicate(status, payload))
@@ -352,9 +378,31 @@ def api_selfcheck(base: str, dump_dir: Path | None = None) -> dict:
 
     check("/api/search?q=ex", lambda status, body: status == 200 and len(body["packages"]) > 0)
     check("/api/lookalikes", lambda status, body: status == 200 and body["count"] > 0)
-    check("/api/nope", lambda status, body: status == 404 and "error" in body)
+    # The negative half. A route that answers 200 with an empty body for a name
+    # that does not exist is the failure worth catching: on this UI it reads as
+    # "nothing found, you are clean" when the truth is "you asked for nonsense".
+    check("/api/nope", lambda status, body: status == 404 and "error" in body,
+          note="unknown route is 404, not the UI page")
     check("/api/packages/definitely-not-a-package",
-          lambda status, body: status == 404 and "error" in body)
+          lambda status, body: status == 404 and "error" in body,
+          note="unknown package is 404, not an empty package view")
+    check("/api/services/definitely-not-a-service",
+          lambda status, body: status == 404 and "error" in body,
+          note="unknown service is 404, not an empty report")
+    check("/api/maintainers/definitely-not-a-maintainer",
+          lambda status, body: status == 404 and "error" in body,
+          note="unknown maintainer is 404, not an empty blast radius")
+    check("/api/search", lambda status, body: status == 200
+          and body["packages"] == [] and body["maintainers"] == [],
+          note="search with no term is an empty answer, not an error and not everything")
+    check("/api/search?q=ex&limit=banana", lambda status, body: status == 400 and "error" in body,
+          note="a bad limit is the caller's 400, not the server's 500")
+    check("/api/search?q=ex&limit=0", lambda status, body: status == 400 and "error" in body,
+          note="a nonsensical limit is refused")
+    check("/api/services", lambda status, body: status == 405 and "error" in body,
+          note="the API is read-only: POST is refused", method="POST")
+    check("/api/services/checkout-api", lambda status, body: status == 405,
+          note="read-only holds for DELETE too", method="DELETE")
 
     return {"base": base, "graph": health.get("graph", {}), "checks": checks}
 
@@ -422,6 +470,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     selftest.add_argument("--out", default="artifacts/selftest.json")
     selftest.set_defaults(func=cmd_selftest)
+
+    contract = sub.add_parser(
+        "contract",
+        help="prove the failure paths: 401 on a bad token, 404 on a wrong graph, "
+             "and that writes are readable afterwards",
+    )
+    contract.add_argument("--out", default="artifacts/contract.json")
+    contract.set_defaults(func=cmd_contract)
 
     ingest = sub.add_parser("ingest", help="build the graph from public data")
     ingest.add_argument("--seeds", type=int, default=None, help="how many seed packages")

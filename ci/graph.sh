@@ -36,6 +36,11 @@ python -m blastradius.cli wait
 # vertices in seconds, so an unsupported query is reported before the ingest
 # spends minutes downloading the advisory corpus.
 python -m blastradius.cli selftest --out artifacts/selftest.json
+# The contract run is second: it proves the failure paths (a wrong token is
+# refused with 401, a wrong graph is refused rather than answered with an empty
+# result, and a batch of 2,500 rows is readable back out of the graph after the
+# server answers 200) while the graph is still empty and cheap to disturb.
+python -m blastradius.cli contract --out artifacts/contract.json
 python -m blastradius.cli ingest --seeds "$SEED_PACKAGES"
 python -m blastradius.cli verify --out artifacts/results.json
 # The API is checked last, against the graph the run just built: every route is

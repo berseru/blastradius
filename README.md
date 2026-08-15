@@ -327,14 +327,45 @@ the rules the database enforces — batch form, `MERGE` on `id` alone, no nulls,
 every field present in every row, body-size-bounded chunks — so a violation fails
 in 0.2s locally instead of minutes into a CI run.
 
-CI runs the suite, then starts a real HydraDB node and runs `selftest`, the
-ingest, the traversals and the API self-check against it, publishing
-`artifacts/selftest.json`, `artifacts/ingest.json`, `artifacts/results.json`,
-`artifacts/api.json` and the node's own logs.
+CI runs the suite, then starts a real HydraDB node and runs `selftest`,
+`contract`, the ingest, the traversals and the API self-check against it,
+publishing `artifacts/selftest.json`, `artifacts/contract.json`,
+`artifacts/ingest.json`, `artifacts/results.json`, `artifacts/api.json` and the
+node's own logs.
 
 `tests/unit/test_web.py` covers the API without a database, including a test that
 the CI self-check *fails* on a graph with no hits — a check that cannot fail is
 not a check.
+
+### The failure paths, proved
+
+Happy-path green says very little. `blastradius contract` runs against the live
+node in CI and asserts the ways this could be quietly wrong:
+
+| Check | What would be wrong without it |
+|---|---|
+| `auth_wrong_token`, `auth_empty_token`, `auth_no_header` | the graph answering an unauthenticated caller |
+| `auth_valid_token` | a 401 above that really meant "the server is down" |
+| `graph_unknown`, `namespace_unknown`, `cell_unknown` | the wrong graph answering `200` with zero rows, which on this UI reads as *"your services are clean"* |
+| `write_is_readable` | `200 OK` on a batch the graph never stored — 2,500 rows are written, then counted back out of the graph |
+| `rewrite_is_idempotent` | the same batch twice doubling the graph |
+| `update_is_visible` | `SET` being accepted without changing stored state |
+| `rejected_write_is_not_partial` | a refused batch leaving half its rows behind |
+| `server_error_surfaces`, `oversized_row_is_reported` | an error losing its code on the way up, or the 1 MiB body cap silently truncating |
+
+The receipt is `artifacts/contract.json`, with the status code and error code the
+server actually returned for each one.
+
+The API has the same treatment: an unknown service, package or maintainer is
+`404` and never an empty page, a malformed `limit` is the caller's `400` and not
+the server's `500`, and `POST`/`PUT`/`PATCH`/`DELETE` are refused with `405`, so
+"read-only" is enforced by the server rather than asserted in this file.
+
+`tests/unit/test_contract.py` then runs those checks against fake servers that
+each break one clause on purpose — one that accepts any token, one that answers a
+wrong graph with an empty result, one that accepts writes and stores nothing, one
+that duplicates rows on rewrite — and requires the matching check to fail. A test
+suite that only proves the good case proves nothing.
 
 ## Data sources and attribution
 
