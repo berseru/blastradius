@@ -432,11 +432,20 @@ def match_versions(
 
 
 def load_advisories(archive: str | Path, names: set[str]) -> tuple[dict[str, list[Advisory]], int]:
-    """Stream the OSV dump once, keeping only advisories for packages we hold."""
+    """Stream the OSV dump once, keeping only advisories for packages we hold.
+
+    A **withdrawn** advisory is skipped. OSV withdraws a record when it turns out
+    to be wrong or a duplicate, so ingesting one would put an AFFECTS edge on a
+    version nobody considers affected any more - a false accusation that reads
+    exactly like a real hit in every view downstream. ``advisories_by_package``
+    has always dropped them; this path did not, and the two disagreed.
+    """
     kept: dict[str, list[Advisory]] = defaultdict(list)
     scanned = 0
     for advisory in iter_advisories(archive):
         scanned += 1
+        if advisory.withdrawn:
+            continue
         # An advisory can list the same package in several `affected` entries
         # (one per version window), so the package names are deduplicated here
         # or the advisory would be ingested once per entry.

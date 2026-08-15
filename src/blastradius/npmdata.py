@@ -276,8 +276,14 @@ class Fetcher:
                         throttles_left -= 1
                         if throttles_left <= 0:
                             break
+                        # The server's own number is better than an invented
+                        # backoff, but it is still capped: an uncapped
+                        # Retry-After (npm has answered with minutes) stalls the
+                        # whole ingest on one decoration request.
+                        stated = retry_after_seconds(response)
                         await asyncio.sleep(
-                            retry_after_seconds(response) or min(delay, MAX_BACKOFF)
+                            min(stated, MAX_BACKOFF) if stated is not None
+                            else min(delay, MAX_BACKOFF)
                         )
                         delay = min(delay * 2, MAX_BACKOFF)
                         continue
