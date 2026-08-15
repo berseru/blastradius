@@ -70,6 +70,8 @@ class IngestStats:
     similar_edges: int = 0
     similar_pairs: list[dict] = field(default_factory=list)
     rows_written: int = 0
+    fetch_failures: int = 0
+    fetch_failure_examples: list[str] = field(default_factory=list)
     fetch_seconds: float = 0.0
     parse_seconds: float = 0.0
     write_seconds: float = 0.0
@@ -86,6 +88,8 @@ class IngestStats:
             "similar_edges": self.similar_edges,
             "similar_pairs": self.similar_pairs,
             "rows_written": self.rows_written,
+            "fetch_failures": self.fetch_failures,
+            "fetch_failure_examples": self.fetch_failure_examples,
             "fetch_seconds": round(self.fetch_seconds, 2),
             "parse_seconds": round(self.parse_seconds, 2),
             "write_seconds": round(self.write_seconds, 2),
@@ -114,7 +118,7 @@ async def fetch_inputs(
     seeds: list[tuple[str, str]],
     cache_dir: str | Path,
     extra_names: Iterable[str] = (),
-) -> tuple[dict[str, PackageMeta], list[ResolvedGraph], dict[str, int]]:
+) -> tuple[dict[str, PackageMeta], list[ResolvedGraph], dict[str, int], list[str]]:
     """Resolve the seeds first, then fetch metadata for everything they pull in.
 
     The order matters: the transitive closure is only known after resolution,
@@ -129,10 +133,10 @@ async def fetch_inputs(
             names.update(name for name, _version in graph.nodes)
         metas = await fetcher.gather_package_meta(sorted(names))
         downloads = await fetcher.weekly_downloads(sorted(names | set(metas)))
-        if fetcher.failures:
-            print(f"  {len(fetcher.failures)} fetches failed, e.g. {fetcher.failures[:3]}",
-                  flush=True)
-    return metas, resolved, downloads
+        failures = list(fetcher.failures)
+        if failures:
+            print(f"  {len(failures)} fetches failed, e.g. {failures[:3]}", flush=True)
+    return metas, resolved, downloads, failures
 
 
 def build_rows(
@@ -440,7 +444,9 @@ def ingest(
         lock_names |= lock.names()
 
     started = time.perf_counter()
-    metas, resolved, downloads = asyncio.run(fetch_inputs(seeds, cache_dir, lock_names))
+    metas, resolved, downloads, fetch_failures = asyncio.run(
+        fetch_inputs(seeds, cache_dir, lock_names)
+    )
     fetch_seconds = time.perf_counter() - started
     print(f"fetched {len(metas)} packuments, {len(resolved)} resolved graphs "
           f"in {fetch_seconds:.1f}s", flush=True)
@@ -459,6 +465,8 @@ def ingest(
         seeds, metas, resolved, advisories, lockfiles, downloads=downloads
     )
     stats.fetch_seconds = fetch_seconds
+    stats.fetch_failures = len(fetch_failures)
+    stats.fetch_failure_examples = fetch_failures[:5]
     stats.parse_seconds = parse_seconds
     stats.advisories_scanned = scanned
     print(f"rows to write: {rows.counts()}", flush=True)

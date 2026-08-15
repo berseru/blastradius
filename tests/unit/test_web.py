@@ -29,7 +29,8 @@ HITS = [
     ["lib@2.0.0", "GHSA-aaaa-bbbb-cccc", "vulnerability", "HIGH", 1_740_000_000, 1_690_000_000,
      True, False, False],
 ]
-PACKAGES = {"expess": 138, "express": 127_296_948, "lib": 4_000_000}
+PACKAGES = {"expess": 138, "express": 127_296_948, "lib": 4_000_000,
+            "@types/node": 900_000_000}
 
 
 class FakeClient:
@@ -189,10 +190,13 @@ class TestRouting:
         assert match_route(table, ["api", "healthz"]) is None
 
     def test_a_scoped_package_name_survives_one_unquote(self, base_url):
-        # @types/node is two path segments once decoded, so the route table would
-        # never match it; the handler receives it percent-encoded and unquoted.
-        status, body = get(f"{base_url}/api/packages/%40types%2Fnode")
-        assert status == 404 and "no package" in body["error"]
+        # A scoped name is two path segments once decoded, so the route table
+        # would never match it; the handler receives it percent-encoded and
+        # unquoted exactly once. Proved here on a name that is *not* in the
+        # graph, so the name in the 404 is the name that arrived.
+        status, body = get(f"{base_url}/api/packages/%40scope%2Fmissing")
+        assert status == 404
+        assert "@scope/missing" in body["error"], body["error"]
 
 
 class TestServiceView:
@@ -271,6 +275,29 @@ class TestOverHttp:
             status, body = get(f"{base_url}{path}")
             assert status == 404, f"{path} answered {status}"
             assert body["error"], f"{path} gave a 404 with no reason"
+
+    def test_a_scoped_name_survives_the_path(self, base_url):
+        """``@types/node`` is one name containing a slash, not two segments.
+
+        Roughly a third of npm is scoped, and every link in the UI to one of
+        those packages goes through this route, so the encoding round trip is
+        proved rather than assumed. Nothing else in the suite has a "/" inside a
+        single path segment.
+        """
+        import urllib.parse
+
+        quoted = urllib.parse.quote("@types/node", safe="")
+        assert "%2F" in quoted
+        status, body = get(f"{base_url}/api/packages/{quoted}")
+
+        assert status == 200, f"a scoped package answered {status}"
+        assert body["package"] == "@types/node"
+        assert body["versions"], "the scoped name reached the handler mangled"
+
+    def test_an_unencoded_scoped_name_is_a_404_not_a_wrong_answer(self, base_url):
+        """Sent raw it really is two segments, and no route has that shape."""
+        status, _ = get(f"{base_url}/api/packages/@types/node")
+        assert status == 404
 
     def test_a_bad_limit_is_the_callers_400_not_the_servers_500(self, base_url):
         for query in ("limit=banana", "limit=0", "limit=-3"):

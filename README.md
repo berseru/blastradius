@@ -122,7 +122,8 @@ blastradius selftest                  # every statement, on 11 synthetic vertice
 blastradius contract                  # the failure paths: 401, wrong graph, writes that landed
 blastradius ingest --seeds 40         # registry + OSV -> graph
 blastradius verify --out artifacts/results.json
-blastradius crosscheck                # sampled answers vs the live OSV API
+blastradius serve --selfcheck --dump-dir artifacts/api-samples   # drives every route
+blastradius crosscheck                # those answers vs the live OSV API
 blastradius ask typosquat-incident
 blastradius stats                     # ecosystem counts, no database needed
 ```
@@ -132,6 +133,10 @@ miniature graph with the production statements, runs every production query
 against it, checks the answers and deletes it again, reporting each statement the
 server refuses with the server's own message. It is how an unsupported query gets
 found before a 219 MB download rather than after it.
+
+`crosscheck` reads the answers `serve --selfcheck` dumped, which is why that
+line comes first: it re-asks the live OSV API about a sample of them, so the run
+is checked against a source that is not this project's own parser.
 
 `ingest` downloads the OSV npm archive once (~219 MB) into `data/` and caches
 every registry response under `data/cache/`, so re-runs are cheap and offline.
@@ -344,7 +349,34 @@ publishing `artifacts/selftest.json`, `artifacts/contract.json`,
 
 `tests/unit/test_web.py` covers the API without a database, including a test that
 the CI self-check *fails* on a graph with no hits — a check that cannot fail is
-not a check.
+not a check. The same rule is applied to this project's own checks:
+`tests/unit/test_cli_errors.py` points the contract run at a dead port and
+asserts that *every* check fails, because a body-cap check that accepts any
+transport error passes against nothing at all.
+
+### What happens when a source is unreachable
+
+The registry answers `429` when it is asked too much, and the fetcher retries
+with a backoff. When the retries run out the package is missing from the graph —
+and with it, its versions, its dependencies and its maintainers, which makes
+every chain that would have crossed it disappear. A blast radius that is too
+small reads as safety, so this is not a warning:
+
+```
+$ blastradius ingest --seeds 40
+  3 fetches failed, e.g. ['https://registry.npmjs.org/left-pad (HTTP 429 after 4 attempts)']
+3 source fetches failed (allowed: 0); the graph is incomplete
+$ echo $?
+1
+```
+
+`--max-fetch-failures` raises that budget deliberately, in the open. The count
+and examples are written into `artifacts/ingest.json` either way.
+
+The OSV snapshot is treated the same way: `ingest` and `stats` print how old the
+cached archive is and say so loudly past a week, because OSV publishes new
+malicious-package records daily and an old snapshot under-reports without ever
+looking wrong.
 
 ### The failure paths, proved
 
@@ -360,7 +392,7 @@ node in CI and asserts the ways this could be quietly wrong:
 | `rewrite_is_idempotent` | the same batch twice doubling the graph |
 | `update_is_visible` | `SET` being accepted without changing stored state |
 | `rejected_write_is_not_partial` | a refused batch leaving half its rows behind |
-| `server_error_surfaces`, `oversized_row_is_reported` | an error losing its code on the way up, or the 1 MiB body cap silently truncating |
+| `server_error_surfaces`, `oversized_row_is_reported` | an error losing its code on the way up, or the 1 MiB body cap silently truncating — the body-cap check first proves the node is reachable, so a refused connection cannot stand in for a refused row |
 
 Running it against HydraDB 0.1.1 found one deviation worth reporting: a query
 sent to a **cell that does not exist answers `500`**, where an unknown graph or

@@ -126,11 +126,21 @@ class Fetcher:
     # -- http --------------------------------------------------------------
 
     async def _get_json(self, url: str, bucket: str, key: str) -> Any | None:
+        """Fetch one document, or record *why* it could not be fetched.
+
+        Every path out of this function that returns ``None`` has to leave a
+        trace in ``failures``. A package lost to a rate limit is a package whose
+        versions, dependencies and maintainers never enter the graph, and a blast
+        radius that is too small is worse than one that is missing outright: it
+        reads as safety. This used to be silent when the retry budget was spent
+        on 429s rather than on exceptions.
+        """
         cached = self._read_cache(bucket, key)
         if cached is not None:
             return cached
         async with self._semaphore:
             delay = 1.0
+            last = "no attempt made"
             for attempt in range(self.retries):
                 try:
                     response = await self._client.get(url)
@@ -138,6 +148,7 @@ class Fetcher:
                         self._write_cache(bucket, key, {})
                         return {}
                     if response.status_code in (429, 500, 502, 503, 504):
+                        last = f"HTTP {response.status_code}"
                         await asyncio.sleep(delay)
                         delay *= 2
                         continue
@@ -146,12 +157,13 @@ class Fetcher:
                     self._write_cache(bucket, key, payload)
                     self.misses += 1
                     return payload
-                except (httpx.HTTPError, json.JSONDecodeError):
+                except (httpx.HTTPError, json.JSONDecodeError) as error:
+                    last = f"{type(error).__name__}: {error}"[:120]
                     if attempt == self.retries - 1:
-                        self.failures.append(url)
-                        return None
+                        break
                     await asyncio.sleep(delay)
                     delay *= 2
+        self.failures.append(f"{url} ({last} after {self.retries} attempts)")
         return None
 
     # -- sources -----------------------------------------------------------

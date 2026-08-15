@@ -1,6 +1,8 @@
-"""Command line entry point: ``wait``, ``selftest``, ``contract``, ``ingest``, ``verify``, ``serve``, ``ask``.
+"""Command line entry point.
 
-CI runs the first four in order. ``selftest`` proves every statement against a
+Nine commands, and CI runs every one of them in this order: ``wait``,
+``selftest``, ``contract``, ``ingest``, ``verify``, ``serve --selfcheck``,
+``crosscheck``, ``ask``, ``stats``. ``selftest`` proves every statement against a
 real node on an 11-vertex fixture in seconds, so an unsupported query is caught
 before the 220 MB ingest rather than after it. ``verify`` then runs every query
 against the real graph and writes a JSON receipt, so a green run means the
@@ -18,6 +20,8 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+
+import httpx
 
 from . import queries
 from .hydra import HydraClient, HydraError
@@ -41,10 +45,35 @@ def client_from_env() -> HydraClient:
     )
 
 
+def archive_age_days(path: Path) -> float:
+    """How old the local OSV snapshot is, in days."""
+    return max(0.0, (time.time() - path.stat().st_mtime) / 86_400)
+
+
+STALE_ARCHIVE_DAYS = 7
+
+
 def ensure_archive(path: Path = DEFAULT_ARCHIVE) -> Path:
-    """Download the OSV npm dump once; it is ~220 MB, so never twice."""
+    """Download the OSV npm dump once; it is ~220 MB, so never twice.
+
+    A cached file is never silently re-used as if it were fresh: OSV publishes
+    new malicious-package records every day, so an old snapshot means advisories
+    that exist are missing from the report, and a security tool that under-reports
+    reads as good news. The age is printed, and said loudly past a week.
+    """
     if path.exists() and path.stat().st_size > 1_000_000:
-        print(f"osv archive: {path} ({path.stat().st_size:,} bytes, cached)", flush=True)
+        age = archive_age_days(path)
+        print(
+            f"osv archive: {path} ({path.stat().st_size:,} bytes, cached, "
+            f"{age:.1f} days old)",
+            flush=True,
+        )
+        if age > STALE_ARCHIVE_DAYS:
+            print(
+                f"  WARNING: this snapshot is {age:.0f} days old and OSV publishes daily; "
+                f"delete {path} to fetch a current one",
+                flush=True,
+            )
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {OSV_NPM_URL}", flush=True)
@@ -75,11 +104,22 @@ def cmd_wait(args: argparse.Namespace) -> int:
     return 0
 
 
+def preflight(client: HydraClient) -> None:
+    """One round trip before a suite runs, so an absent node is said once.
+
+    Without it, a stopped container is reported as two dozen identical
+    "Connection refused" check failures, which reads as a broken project rather
+    than as a missing prerequisite.
+    """
+    client.run(queries.COUNT_BY_LABEL % "Svc")
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     """Prove every statement against a real node before trusting a full run."""
     from .selftest import run_selftest, write_report
 
     with client_from_env() as client:
+        preflight(client)
         report = run_selftest(client)
     print(report.render())
     write_report(report, args.out)
@@ -98,6 +138,8 @@ def cmd_contract(args: argparse.Namespace) -> int:
 
     from .contract import DEVIATION
 
+    with client_from_env() as client:
+        preflight(client)
     report = contract_from_env()
     print(report.render(), flush=True)
     if args.out:
@@ -143,7 +185,12 @@ def cmd_crosscheck(args: argparse.Namespace) -> int:
         + (f" ({report['unreachable']} unreachable)" if report["unreachable"] else "")
     )
     if report["checked"] == 0:
-        print("no samples found to check", file=sys.stderr)
+        print(
+            f"no samples to check in {args.samples}: run "
+            f"`blastradius serve --selfcheck --dump-dir {args.samples}` first, which "
+            "writes the answers this command re-asks OSV about",
+            file=sys.stderr,
+        )
         return 1
     disagreements = [c for c in report["comparisons"] if not c["agrees"]]
     if disagreements:
@@ -171,6 +218,19 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     Path(args.out).write_text(json.dumps(stats.as_dict(), indent=2), encoding="utf-8")
     if stats.rows_written == 0:
         print("ingest wrote nothing", file=sys.stderr)
+        return 1
+    # A package that could not be fetched is a package whose dependencies,
+    # maintainers and versions are missing from the graph, which makes every
+    # blast radius that would have crossed it look smaller than it is. Too small
+    # reads as safety, so it fails the run rather than printing a warning that
+    # scrolls past.
+    if stats.fetch_failures > args.max_fetch_failures:
+        print(
+            f"{stats.fetch_failures} source fetches failed (allowed: "
+            f"{args.max_fetch_failures}); the graph is incomplete: "
+            f"{stats.fetch_failure_examples}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
@@ -332,6 +392,7 @@ def api_selfcheck(base: str, dump_dir: Path | None = None) -> dict:
     in a README, in a demo - with the real corpus behind it rather than a fixture.
     """
     import urllib.error
+    import urllib.parse
 
     def get(path: str, method: str = "GET") -> tuple[int, Any]:
         request = urllib.request.Request(f"{base}{path}", method=method)
@@ -399,14 +460,15 @@ def api_selfcheck(base: str, dump_dir: Path | None = None) -> dict:
         first_hit = (service.get("hits") or [{}])[0].get("version", "")
         package_name = "@".join(first_hit.split("@")[:-1]) or first_hit
         if package_name:
+            quoted = urllib.parse.quote(package_name, safe="")
             check(
-                f"/api/packages/{package_name}",
+                f"/api/packages/{quoted}",
                 lambda status, body: status == 200 and len(body["versions"]) > 0
                 and len(body["shipped_by"]) > 0,
                 note=f"package view for {package_name}",
             )
             maintainers = (
-                check(f"/api/packages/{package_name}", lambda status, body: status == 200)
+                check(f"/api/packages/{quoted}", lambda status, body: status == 200)
                 .get("maintainers")
                 or []
             )
@@ -419,6 +481,23 @@ def api_selfcheck(base: str, dump_dir: Path | None = None) -> dict:
                 )
 
     check("/api/search?q=ex", lambda status, body: status == 200 and len(body["packages"]) > 0)
+    # Scoped names are the only npm names with a "/" in them, so they are the one
+    # shape that can be mistaken for two path segments. A third of the registry
+    # is scoped, and the UI links to them, so the round trip is proved here
+    # rather than assumed from the routing code.
+    scoped = check(
+        "/api/search?q=%40types",
+        lambda status, body: status == 200 and len(body["packages"]) > 0,
+        note="prefix search finds scoped names",
+    )
+    scoped_name = ((scoped.get("packages") or [{}])[0]).get("name", "")
+    if scoped_name.startswith("@"):
+        check(
+            f"/api/packages/{urllib.parse.quote(scoped_name, safe='')}",
+            lambda status, body: status == 200 and body["package"] == scoped_name
+            and len(body["versions"]) > 0,
+            note=f"a scoped name survives the path intact: {scoped_name}",
+        )
     check("/api/lookalikes", lambda status, body: status == 200 and body["count"] > 0)
     # The negative half. A route that answers 200 with an empty body for a name
     # that does not exist is the failure worth catching: on this UI it reads as
@@ -472,11 +551,16 @@ def cmd_stats(args: argparse.Namespace) -> int:
     print(f"published between             {day(stats.first_published)} and "
           f"{day(stats.last_published)}")
     print(f"parsed in                     {elapsed:>9.1f}s")
+    print(f"snapshot age                  {archive_age_days(archive):>9.1f} days")
 
     if args.out:
         payload = {
             "archive": str(archive),
             "archive_bytes": archive.stat().st_size,
+            "archive_age_days": round(archive_age_days(archive), 2),
+            "archive_fetched_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(archive.stat().st_mtime)
+            ),
             "parse_seconds": round(elapsed, 2),
             "first_published": day(stats.first_published),
             "last_published": day(stats.last_published),
@@ -515,7 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     contract = sub.add_parser(
         "contract",
-        help="prove the failure paths: 401 on a bad token, 404 on a wrong graph, "
+        help="prove the failure paths: 401 on a bad token, 403 on a wrong graph, "
              "and that writes are readable afterwards",
     )
     contract.add_argument("--out", default="artifacts/contract.json")
@@ -537,6 +621,13 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--examples", default=str(DEFAULT_LOCKFILES))
     ingest.add_argument("--cache-dir", default="data/cache")
     ingest.add_argument("--out", default="artifacts/ingest.json")
+    ingest.add_argument(
+        "--max-fetch-failures",
+        type=int,
+        default=0,
+        help="how many unreachable source documents to tolerate before the "
+             "ingest is treated as having built an incomplete graph",
+    )
     ingest.set_defaults(func=cmd_ingest)
 
     verify_cmd = sub.add_parser("verify", help="run every query and write a receipt")
@@ -570,7 +661,33 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except httpx.ConnectError:
+        # The most likely first run of this project is one where the container
+        # is not up yet. A stack trace blames the code; this blames the port,
+        # names it, and says what to do about it.
+        url = os.environ.get("HYDRA_URL", "http://127.0.0.1:8443")
+        print(
+            f"cannot reach HydraDB at {url}\n"
+            "  is the container running?  docker ps --filter name=hydradb\n"
+            "  the README's Quickstart starts one, and `blastradius wait` blocks "
+            "until it answers.\n"
+            "  a different address goes in HYDRA_URL.",
+            file=sys.stderr,
+        )
+        return 2
+    except HydraError as error:
+        # The server refused the request, which is different from being absent:
+        # print its own code and message rather than a traceback through httpx.
+        print(f"HydraDB refused the request: {error.code}: {error.message}", file=sys.stderr)
+        if error.status == 401:
+            print("  a 401 means the token: check HYDRA_TOKEN against the node's "
+                  "GRAPH_AUTH_TOKEN_FILE.", file=sys.stderr)
+        if error.status == 403:
+            print("  a 403 means the address: check HYDRA_GRAPH and HYDRA_NAMESPACE.",
+                  file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

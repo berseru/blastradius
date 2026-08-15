@@ -245,14 +245,23 @@ def run_contract(
     _run_check(report, "server_error_surfaces", "durability", server_error_surfaces)
 
     def oversized_row_is_reported() -> str:
-        """One row larger than the 1 MiB body cap cannot be split - it must error."""
+        """One row larger than the 1 MiB body cap cannot be split - it must error.
+
+        A transport-level refusal counts, because a server may drop the
+        connection instead of answering 413 - but only after this proves the node
+        is reachable *right now*. Without that control, an absent server refuses
+        the connection too, and this check would pass against nothing at all.
+        """
+        assert client.run(PROBE_COUNT, {"run": run_id}).scalar() is not None, (
+            "the node must be reachable for a refusal to mean anything"
+        )
         huge = [{"id": PROBE_BASE + 999_000, "run": run_id, "seq": 0, "note": "x" * 1_200_000}]
         try:
             client.batch(PROBE_WRITE, huge, chunk_size=1)
         except HydraError as error:
             return f"{error.status} {error.code}"
         except httpx.HTTPError as error:
-            return f"transport refused it: {type(error).__name__}"
+            return f"transport refused it: {type(error).__name__} (node reachable)"
         raise AssertionError("a 1.2 MB property was accepted; the body cap is not enforced")
 
     _run_check(report, "oversized_row_is_reported", "durability", oversized_row_is_reported)
