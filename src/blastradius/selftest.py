@@ -420,6 +420,35 @@ def run_selftest(client: HydraClient) -> SelfTestReport:
 
     _run_check(report, "ui_lookups", "read", ui_lookups)
 
+    def incident_view() -> str:
+        """The whole incident report, on the fixture, before any ingest.
+
+        This is the only place the six-question path can be proved without a
+        220 MB download: it uses variable-length patterns anchored on a package
+        *name* rather than an id, which is exactly the shape a server is free to
+        refuse. `selftest-lib-typo` sits three hops under the service, so a real
+        answer here is not the empty one.
+        """
+        from .incident import investigate
+
+        report = investigate(client, "selftest-lib-typo", max_depth=4)
+        by_number = {answer.number: answer for answer in report.answers}
+        services = {row["service"] for row in by_number[1].rows}
+        assert services == {"selftest-service"}, f"exposure came back as {by_number[1].rows}"
+        depths = {row["depth"] for row in by_number[1].rows}
+        assert max(depths) >= 2, f"only found it at depth {depths}"
+        assert any(row["advisory"] == "MAL-SELFTEST-0002" for row in by_number[2].rows), \
+            f"advisories came back as {by_number[2].rows}"
+        assert any(row["verdict"].startswith("yes") for row in by_number[3].rows), \
+            f"nobody resolved it while live: {by_number[3].rows}"
+        assert any(row["relation"] == "impersonated by" or row["relation"] == "this name impersonates"
+                   for row in by_number[5].rows), f"no lookalike: {by_number[5].rows}"
+        assert by_number[6].rows, "no chain from the typosquat to the service"
+        return (f"{len(services)} service, depth {max(depths)}, "
+                f"{len(by_number[6].rows)} chain(s), {report.seconds:.2f}s")
+
+    _run_check(report, "incident_view", "read", incident_view)
+
     def chains() -> str:
         found = queries.blast_radius(client, [PATCH_KEY, TYPO_KEY], [APP_KEY], max_len=6)
         assert found, "no chain found from a bad version to the app"

@@ -1,6 +1,7 @@
 {
   "name": "typosquat-incident",
   "lockfileVersion": 3,
+  "blastradiusCapturedAt": "2026-08-11T08:30:00Z",
   "requires": true,
   "packages": {
     "": {

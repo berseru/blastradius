@@ -1,6 +1,7 @@
 {
   "name": "checkout-api",
   "lockfileVersion": 3,
+  "blastradiusCapturedAt": "2026-06-02T09:14:00Z",
   "requires": true,
   "packages": {
     "": {

@@ -124,6 +124,7 @@ blastradius ingest --seeds 40         # registry + OSV -> graph
 blastradius verify --out artifacts/results.json
 blastradius serve --selfcheck --dump-dir artifacts/api-samples   # drives every route
 blastradius crosscheck                # those answers vs the live OSV API
+blastradius incident axioss           # a package was just called malicious: the six answers
 blastradius ask typosquat-incident
 blastradius stats                     # ecosystem counts, no database needed
 ```
@@ -219,6 +220,43 @@ into the pattern is rejected, since the pattern is the identity being matched.
 And there is no null property value: a `None` anywhere in a parameter fails the
 whole request, so "we do not know when this was published" is written as the
 sentinel `0` and read back as unknown (`queries.known_time`), never as 1970.
+
+## The six questions, answered
+
+The track states the questions a defender has to answer when a package is
+compromised. `blastradius incident <package>` answers all six from the same
+graph, reading it from the compromised name outwards - the direction the
+question actually arrives in, and the opposite of every other command here:
+
+```
+$ blastradius incident axioss
+```
+
+| # | The question | Where the answer comes from |
+|---|---|---|
+| 1 | Which internal services are transitively exposed? | the reverse dependency closure, asked one hop count at a time so the answer includes *how far away* it is |
+| 2 | Which version of the dependency introduced the vulnerability? | the `introduced`/`fixed` boundaries carried on the `AFFECTS` edge, with the publication date of the first affected release |
+| 3 | Which applications resolved the compromised version while it was live? | each lockfile's own snapshot date against the window between the bad release and its fix |
+| 4 | Which other packages share maintainers or infrastructure with it? | `MAINTAINS`, in one traversal - a relationship that does not exist in a lockfile at all |
+| 5 | Are there likely typosquat packages nearby? | `SIMILAR`, read in both directions: this name impersonating another, and others impersonating it |
+| 6 | What is the complete blast radius? | every chain from a bad version to something deployed, via the native path procedures |
+
+Each answer records the statements it ran and how long they took, and the whole
+report is written to `artifacts/incident-*.json` by CI, so "this takes seconds"
+is a measurement rather than a claim.
+
+Question 3 is the one that needs a graph with time in it. A lockfile carries no
+date, so the snapshot date comes from the commit that last touched the file (the
+examples state it explicitly, which is why they disagree with each other). That
+turns three different situations into three different answers instead of one:
+
+- the snapshot predates the bad release — **not exposed**, whatever the scanner says today;
+- the snapshot sits inside the window, before disclosure — **shipping it while nobody knew**;
+- the snapshot is after a fixed version existed — **exposed, but it was avoidable**.
+
+A name the graph has never seen exits non-zero and says so. "We have no data
+about this package" and "you are not affected" are different answers, and during
+an incident the difference is the whole job.
 
 ## Example services
 

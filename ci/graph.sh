@@ -5,6 +5,14 @@ cd "$(dirname "$0")/.."
 # shellcheck source=ci/lib.sh
 source ci/lib.sh
 
+# First, and in a clone of its own: the README's Quickstart, run exactly as
+# written, in an empty directory with no cache. A judge's first five minutes are
+# spent here, and a documented step that cannot be followed is a defect no test
+# suite reports. Its result is remembered and applied at the end of this script,
+# so one broken line in the docs does not cost the whole run's evidence.
+QUICKSTART_STATUS=0
+bash ci/quickstart.sh || QUICKSTART_STATUS=$?
+
 install_project
 
 mkdir -p hydradb-data/store hydradb-data/cache artifacts
@@ -64,4 +72,20 @@ python -m blastradius.cli stats --out artifacts/corpus.json
 if python -m blastradius.cli ask no-such-service; then
   echo "ask accepted an unknown service" >&2
   exit 1
+fi
+
+# The six questions the track asks, answered from the compromised package
+# outwards: once for a malicious package with no fix, once for a plain
+# vulnerability that does have one, because those are different answers.
+python -m blastradius.cli incident axioss --out artifacts/incident-axioss.json
+python -m blastradius.cli incident minimist --out artifacts/incident-minimist.json
+# A name the graph has never seen must not answer "you are not affected".
+if python -m blastradius.cli incident definitely-not-a-real-package-name; then
+  echo "incident answered about a package that is not in the graph" >&2
+  exit 1
+fi
+
+if [ "$QUICKSTART_STATUS" -ne 0 ]; then
+  echo "the README Quickstart failed: see artifacts/quickstart.json" >&2
+  exit "$QUICKSTART_STATUS"
 fi

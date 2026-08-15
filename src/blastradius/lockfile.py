@@ -17,11 +17,17 @@ its resolution entries to a concrete tree needs a second parser.
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 from .versions import range_admits
+
+#: npm ignores unknown top-level keys, so an example lockfile can state the date
+#: it represents without becoming an invalid lockfile.
+CAPTURED_AT_FIELD = "blastradiusCapturedAt"
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,12 @@ class Lockfile:
     pins: list[Pin] = field(default_factory=list)
     requirements: dict[str, str] = field(default_factory=dict)
     edges: list[Edge] = field(default_factory=list)
+    #: When this file was last changed, epoch seconds, or ``None`` when unknown.
+    #: A lockfile has no timestamp of its own, so this comes from the commit that
+    #: last touched it. It is what turns "you are exposed" into "you were already
+    #: shipping this on 18 November, three weeks before anyone disclosed it" - and
+    #: when it is unknown it stays ``None`` rather than quietly becoming today.
+    captured_at: int | None = None
 
     @property
     def direct(self) -> list[Pin]:
@@ -132,7 +144,11 @@ def _resolve_child(
     return None
 
 
-def parse_lockfile(text: str, service: str | None = None) -> Lockfile:
+def parse_lockfile(
+    text: str, service: str | None = None, *, source: Path | None = None
+) -> Lockfile:
+    # NB: ``path`` is used as a loop variable below for lockfile entry paths, so
+    # the file this text came from is called ``source`` on purpose.
     document = json.loads(text)
     version = int(document.get("lockfileVersion", 1))
     name = service or document.get("name") or "service"
@@ -246,12 +262,51 @@ def parse_lockfile(text: str, service: str | None = None) -> Lockfile:
         pins=sorted(pins.values(), key=lambda pin: pin.key),
         requirements=requirements,
         edges=sorted(edges.values(), key=lambda edge: edge.edge_key),
+        captured_at=_captured_at(document, source),
     )
+
+
+def git_commit_time(path: Path) -> int | None:
+    """When the repository last changed this lockfile, epoch seconds.
+
+    This is the real-world source of a snapshot date: a lockfile carries no
+    timestamp, and a file's mtime is the moment it was checked out, not the
+    moment it was written. Returns ``None`` outside a repository, on a shallow
+    clone that does not contain the last commit to touch the file, or when git
+    is not installed - all of which are normal, and none of which may be
+    answered with a guess.
+    """
+    try:
+        finished = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", path.name],
+            cwd=path.parent, capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    stamp = finished.stdout.strip()
+    return int(stamp) if finished.returncode == 0 and stamp.isdigit() else None
+
+
+def _captured_at(document: dict, path: Path | None) -> int | None:
+    """The snapshot date: what the file says, else what the repository says."""
+    stated = document.get(CAPTURED_AT_FIELD)
+    if isinstance(stated, str) and stated:
+        try:
+            return int(datetime.fromisoformat(
+                stated.replace("Z", "+00:00")
+            ).replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            pass
+    if isinstance(stated, int) and not isinstance(stated, bool):
+        return stated
+    return git_commit_time(path) if path is not None else None
 
 
 def load_lockfile(path: str | Path, service: str | None = None) -> Lockfile:
     file_path = Path(path)
-    return parse_lockfile(file_path.read_text(), service or file_path.parent.name)
+    return parse_lockfile(
+        file_path.read_text(), service or file_path.parent.name, source=file_path
+    )
 
 
 def merge_names(lockfiles: Iterable[Lockfile]) -> set[str]:

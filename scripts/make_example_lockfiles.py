@@ -155,9 +155,25 @@ async def build(service: str, pins: dict[str, tuple[str, bool]]) -> dict:
     return {
         "name": service,
         "lockfileVersion": 3,
+        # A lockfile has no date of its own. Real repositories answer this with
+        # the commit that last touched the file (blastradius reads that when the
+        # clone has it); these examples state it, so every run agrees on when
+        # each service's snapshot was taken.
+        "blastradiusCapturedAt": CAPTURED_AT[service],
         "requires": True,
         "packages": {"": root, **dict(sorted(packages.items()))},
     }
+
+
+#: When each example snapshot was taken. The spread is the point: the incident
+#: lockfile is days old, the admin dashboard's is from last November - before the
+#: advisory that names one of its versions was published.
+CAPTURED_AT = {
+    "checkout-api": "2026-06-02T09:14:00Z",
+    "admin-dashboard": "2025-11-18T16:40:00Z",
+    "data-worker": "2026-02-10T11:05:00Z",
+    "typosquat-incident": "2026-08-11T08:30:00Z",
+}
 
 
 async def build_typosquat() -> dict:

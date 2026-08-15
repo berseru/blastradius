@@ -209,6 +209,51 @@ RETURN suspect.name AS suspect, target.name AS looks_like,
        suspect.downloads AS suspect_downloads, target.downloads AS target_downloads
 """
 
+# --------------------------------------------------------------------------
+# 9. The incident view: the same graph read from the compromised package
+#    outwards, which is the direction a defender reads it at 09:00. Everything
+#    above starts from a service we own; these start from a name that was just
+#    called malicious and nobody has told us where it sits yet.
+# --------------------------------------------------------------------------
+
+INCIDENT_ADVISORIES = """
+MATCH (p:Pkg {name: $name})<-[:OF]-(v:Ver)<-[a:AFFECTS]-(adv:Adv)
+RETURN adv.osv AS advisory, adv.kind AS kind, adv.severity AS severity,
+       adv.has_fix AS has_fix, adv.published_at AS disclosed_at,
+       a.introduced AS introduced, a.fixed AS fixed,
+       v.key AS version, v.published_at AS version_published
+"""
+
+INCIDENT_DIRECT_USERS = """
+MATCH (p:Pkg {name: $name})<-[:OF]-(v:Ver)<-[u:USES]-(s:Svc)
+RETURN s.name AS service, s.captured_at AS captured_at, v.key AS version,
+       v.published_at AS version_published, u.direct AS direct, u.dev AS dev
+"""
+
+# The reverse-dependency closure, one hop count at a time: the hop bounds have
+# to be integer literals, and asking depth by depth also answers "how far away
+# is it" instead of only "is it reachable".
+INCIDENT_REACHED_AT = """
+MATCH (p:Pkg {name: $name})<-[:OF]-(bad:Ver)<-[:DEPENDS*%d..%d]-(entry:Ver)<-[u:USES]-(s:Svc)
+RETURN s.name AS service, s.captured_at AS captured_at, bad.key AS version,
+       entry.key AS entry_point, u.direct AS direct, u.dev AS dev
+"""
+
+SHARED_MAINTAINERS = """
+MATCH (p:Pkg {name: $name})<-[:MAINTAINS]-(m:Maint)-[:MAINTAINS]->(other:Pkg)
+RETURN m.login AS login, m.package_count AS package_count,
+       other.name AS package, other.downloads AS downloads
+"""
+
+# The mirror of TYPOSQUAT_NEIGHBOURS_BY_NAME: names that impersonate *this* one.
+# Both directions matter during an incident - the compromised package may be the
+# impostor, or the victim being impersonated.
+LOOKALIKES_OF = """
+MATCH (suspect:Pkg)-[r:SIMILAR]->(p:Pkg {name: $name})
+RETURN suspect.name AS suspect, r.distance AS distance,
+       r.downloads_ratio AS downloads_ratio, suspect.downloads AS suspect_downloads
+"""
+
 MAX_TRAVERSAL_HOPS = 16  # server default for max_traversal_hops
 
 COUNT_BY_LABEL = "MATCH (n:%s) RETURN count(*) AS total"

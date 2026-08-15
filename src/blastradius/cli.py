@@ -1,8 +1,8 @@
 """Command line entry point.
 
-Nine commands, and CI runs every one of them in this order: ``wait``,
+Ten commands, and CI runs every one of them in this order: ``wait``,
 ``selftest``, ``contract``, ``ingest``, ``verify``, ``serve --selfcheck``,
-``crosscheck``, ``ask``, ``stats``. ``selftest`` proves every statement against a
+``crosscheck``, ``incident``, ``ask``, ``stats``. ``selftest`` proves every statement against a
 real node on an 11-vertex fixture in seconds, so an unsupported query is caught
 before the 220 MB ingest rather than after it. ``verify`` then runs every query
 against the real graph and writes a JSON receipt, so a green run means the
@@ -335,6 +335,37 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_incident(args: argparse.Namespace) -> int:
+    """Answer the six incident questions about one package, against the graph.
+
+    Exits non-zero when the name is not in the graph: "we have never heard of
+    this package" is a different answer from "you are not affected", and a
+    responder must not read one as the other.
+    """
+    from .incident import UnknownPackage, investigate
+
+    with client_from_env() as client:
+        preflight(client)
+        try:
+            report = investigate(client, args.package, max_depth=args.max_depth)
+        except UnknownPackage:
+            print(
+                f"{args.package!r} is not in this graph, so this is not an answer about "
+                f"your exposure.\n"
+                f"  ingest it first: blastradius ingest --seeds 250, or add it to "
+                f"scripts/seed_packages.txt",
+                file=sys.stderr,
+            )
+            return 1
+
+    print(report.render())
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(json.dumps(report.as_dict(), indent=2), encoding="utf-8")
+        print(f"\nwrote {args.out}")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Serve the read-only API and the UI, or prove both against a live node.
 
@@ -656,6 +687,18 @@ def build_parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("ask", help="show the hits for one service")
     ask.add_argument("service")
     ask.set_defaults(func=cmd_ask)
+
+    incident_cmd = sub.add_parser(
+        "incident",
+        help="one package was just called malicious: answer the six questions",
+    )
+    incident_cmd.add_argument("package", help="the npm package name, e.g. axioss")
+    incident_cmd.add_argument(
+        "--max-depth", type=int, default=6,
+        help="how many dependency hops to search outwards from it (default 6)",
+    )
+    incident_cmd.add_argument("--out", help="write the full answers here as JSON")
+    incident_cmd.set_defaults(func=cmd_incident)
     return parser
 
 

@@ -276,7 +276,12 @@ def build_rows(
                 "id": service_id,
                 "name": lock.service,
                 "pin_count": len(lock.pins),
-                "captured_at": captured_at,
+                # Each lockfile carries its own snapshot date when the file or
+                # the repository knows one; only a file with no date at all
+                # falls back to the run's timestamp. Sharing one date across
+                # every service would make "which app resolved the bad version
+                # while it was live" answerable with a single yes.
+                "captured_at": lock.captured_at or captured_at,
             },
         )
         for pin in lock.pins:
