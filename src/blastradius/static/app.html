@@ -216,7 +216,7 @@ async function showService(name) {
       <div class="headline"><h3>${esc(data.service)}</h3>
         <span class="pill">${data.counts.hits} advisory hit${data.counts.hits === 1 ? "" : "s"} · ${data.counts.chains} chain${data.counts.chains === 1 ? "" : "s"}</span></div>
       <div class="cards">
-        <div class="card"><div class="n">${num(data.counts.hits)}</div><div class="l">pinned versions an advisory names</div></div>
+        <div class="card"><div class="n">${num(data.counts.hits)}</div><div class="l">pinned versions named in advisories</div></div>
         <div class="card bad"><div class="n">${num(data.counts.malicious)}</div><div class="l">known malicious packages</div></div>
         <div class="card warn"><div class="n">${num(data.counts.unfixable)}</div><div class="l">with no fixed version to move to</div></div>
         <div class="card"><div class="n">${num(data.counts.chains)}</div><div class="l">dependency chains that drag them in</div></div>
