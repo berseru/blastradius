@@ -14,6 +14,10 @@ answered](#the-six-track-questions-answered) · [What a run actually
 returns](#what-a-run-actually-returns) · [Evidence and
 tests](docs/EVIDENCE.md) · [Scale evidence](#does-it-hold-up-at-scale) · [Design notes](docs/DESIGN.md)
 
+**Watch the 2:48 demo** — everything below, shown running:
+
+[![blastradius demo video](docs/screenshots/demo-thumb.png)](https://youtu.be/bERrHbPBWCU)
+
 ![the service view](docs/screenshots/service-view.png)
 
 ## Why this exists
