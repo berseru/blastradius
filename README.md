@@ -18,7 +18,15 @@ tests](docs/EVIDENCE.md) · [Scale evidence](#does-it-hold-up-at-scale) · [Desi
 
 [![blastradius demo video](docs/screenshots/demo-thumb.png)](https://youtu.be/bERrHbPBWCU)
 
+<sub>Watch on YouTube — CLI output is verbatim from CI run 31918763850; the UI is the real app replaying that run's recorded API responses.</sub>
+
+---
+
+### The service view
+
 ![the service view](docs/screenshots/service-view.png)
+
+<sub>One page per service: how many advisory hits, how deep they sit, the choke points, and the chains that drag them in.</sub>
 
 ## Why this exists
 
