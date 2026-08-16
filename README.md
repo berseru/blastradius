@@ -12,7 +12,7 @@ Built for Hack Hydra (Track 2 — repos, dependencies and code as graphs) on
 used](#how-hydradb-is-used) · [The six track questions,
 answered](#the-six-track-questions-answered) · [What a run actually
 returns](#what-a-run-actually-returns) · [Evidence and
-tests](docs/EVIDENCE.md) · [Design notes](docs/DESIGN.md)
+tests](docs/EVIDENCE.md) · [Scale evidence](#does-it-hold-up-at-scale) · [Design notes](docs/DESIGN.md)
 
 ![the service view](docs/screenshots/service-view.png)
 
@@ -305,6 +305,33 @@ dump was parsed in 12.5 s; `selftest` put all 25 checks against a live node in
 0.16 s, `contract` ran its 14 checks in 7.1 s, `crosscheck` re-asked the live OSV
 API about 24 findings and agreed on all 24 it could compare, and
 `serve --selfcheck` drove all 23 API checks over HTTP against the same graph.
+
+## Does it hold up at scale?
+
+Yes — measured, not claimed. CI run
+[31918763850](https://github.com/berseru/blastradius/actions/runs/31918763850)
+ran the whole pipeline three times against a **fresh** HydraDB store, on a seed
+list where each level is a prefix of the next, so every level is the same
+workload, just bigger.
+
+| seeds | packages | versions | nodes | edges | ingest (s) | direct_hits | depth_profile | choke_points | exposure_windows | lookalikes | blast_radius |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 143 | 2,389 | 3,113 | 6,705 | 16,264 | 1,289 | 42 ms | 883 ms | 326 ms | 26 ms | 90 ms | 25 ms |
+| 300 | 4,265 | 5,606 | 11,898 | 31,201 | 1,830 | 54 ms | 1,208 ms | 455 ms | 30 ms | 124 ms | 35 ms |
+| 600 | 5,867 | 7,869 | 16,412 | 44,219 | 1,669 | 87 ms | 962 ms | 363 ms | 23 ms | 130 ms | 38 ms |
+
+Query times are medians across the four services, measured as round-trip time to
+the database. From 143 to 600 seeds the graph grew **2.5x** in package versions
+and **2.7x** in edges, while the slowest query grew **1.1x** — the traversals are
+bounded by the answer, not by the size of the store. 0 query failures at every
+level. Ingest time is dominated by polite, rate-limited fetching from npm and
+deps.dev (fetch 1,275 s of the 1,289 s at level 143); the writes themselves took
+2.0 s.
+
+Reproduce it: run the `ci` workflow with `scale = true` (inputs `scale_levels`,
+`seed_packages`); `ci/scale.sh` and `ci/scale_report.py` regenerate
+`artifacts/scale/SCALE.md` and `summary.json`, which are uploaded as run
+artifacts.
 
 ## Reproducing the numbers, and how it is tested
 

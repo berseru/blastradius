@@ -78,7 +78,7 @@ def to_markdown(levels: list[dict]) -> str:
     lines = [
         "## Scale evidence",
         "",
-        "The same pipeline, run four times against a fresh HydraDB store, on a",
+        f"The same pipeline, run {len(levels)} times against a fresh HydraDB store, on a",
         "seed list where every level is a prefix of the next one. Query times are",
         "the median across services, measured as round-trip time to the database.",
         "",
